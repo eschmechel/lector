@@ -1,0 +1,14 @@
+// lector waybar module — merge into your waybar config's module list as "custom/lector".
+// HyDE regenerates waybar configs, so wiring this into a HyDE layout is a manual step
+// (P5 automates it). The module hides itself when lector is idle.
+{
+    "custom/lector": {
+        "exec": "~/Repos/lector/waybar/lector-status.sh",
+        "return-type": "json",
+        "interval": 1,
+        "on-click": "lectorctl pause",
+        "on-click-middle": "lectorctl stop",
+        "on-click-right": "lectorctl menu",
+        "tooltip": true
+    }
+}
