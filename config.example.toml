@@ -1,0 +1,17 @@
+# lector configuration — copied to ~/.config/lector/config.toml by install.sh
+
+[paths]
+notes_dir = "~/Notes/lector"
+models_dir = "~/.local/share/lector/models"
+
+[tts]
+voice = "af_heart"   # any Kokoro voice id (af_heart, af_sarah, am_michael, bf_emma, ...)
+speed = 1.0
+
+[read]
+# Above this word count, a notification asks: read all / section by section / cancel
+long_doc_words = 1500
+
+[inbox]
+# Watch <notes_dir>/inbox for dropped .md/.txt/.pdf files
+enabled = true

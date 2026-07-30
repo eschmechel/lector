@@ -1,0 +1,12 @@
+[Unit]
+Description=lector read-aloud daemon
+After=graphical-session.target
+
+[Service]
+ExecStart=%h/Repos/lector/.venv/bin/lectord
+Restart=on-failure
+RestartSec=2
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target
