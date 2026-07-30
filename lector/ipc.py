@@ -31,13 +31,13 @@ async def serve(path: Path, handler) -> asyncio.AbstractServer:
     return await asyncio.start_unix_server(on_client, path=str(path))
 
 
-def request(path: Path, cmd: str, timeout: float = 10.0, **args) -> dict:
+def request(sock_path: Path, cmd: str, timeout: float = 10.0, **args) -> dict:
     """Synchronous client used by lectorctl."""
     import socket
 
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
         sock.settimeout(timeout)
-        sock.connect(str(path))
+        sock.connect(str(sock_path))
         sock.sendall((json.dumps({"cmd": cmd, **args}) + "\n").encode())
         buf = b""
         while not buf.endswith(b"\n"):

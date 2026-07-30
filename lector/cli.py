@@ -73,7 +73,12 @@ def main() -> None:
     elif ns.command == "status":
         status(ns.waybar)
     elif ns.command == "read":
-        send("read", source=ns.source, path=ns.path)
+        path = ns.path
+        if path:
+            from pathlib import Path
+
+            path = str(Path(path).expanduser().resolve())
+        send("read", source=ns.source, path=path)
     else:
         send(ns.command)
 
