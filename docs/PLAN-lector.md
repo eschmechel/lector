@@ -20,7 +20,7 @@ i9-13900H / 32GB RAM / RTX 4060 Max-Q 8GB.
 | D8 | Laptop is the host; all inference local-first, zero VRAM for TTS/STT (CPU) |
 | D9 | Text outputs → ~/Notes/lector/ as .md AND clipboard |
 | D10 | Audio: play by default; "keep that" action saves the render |
-| D11 | Long docs: threshold → notification asks read-all / section-by-section / cancel (+ summarize once P2 lands) |
+| D11 | Long docs: threshold → asks read-all / section-by-section / cancel (+ summarize once P2 lands). Amended 2026-07-30: the choice opens in the floating fzf chooser (`ui_ask`), NOT dunst actions — dunst actions are middle-click/rofi-menu only in this setup and proved unanswerable |
 | D12 | Resident daemon; mpv IPC; pause/resume/stop/next-section binds |
 | D13 | Kokoro default + Chatterbox HQ as explicit action (GPU-guarded vs Ollama) |
 | D14/D17 | Dual STT: Moonshine streams live partials, Parakeet finalizes on release |
@@ -37,6 +37,10 @@ i9-13900H / 32GB RAM / RTX 4060 Max-Q 8GB.
 | D26 | Binds sourced from userprefs.conf; mpv-mpris optional for media-key control |
 | D27 | Binds use HyDE `bindd` + description so they appear in the Super+/ hint viewer (hint reads `hyprctl binds -j`) |
 | D28 | Existing `Super+F → ~/bin/stt-medium-toggle` (keybindings.conf:221) is removed at P3 when lector dictation replaces it; dead `Super+H → voxd` bind is taken over at P3 |
+| D29 | No rofi/wofi: the menu is fzf in a floating kitty window (`lector-menu` class, windowrules in lector-binds.conf), tty-aware — inline TUI when run from a terminal |
+| D30 | File picker matches: fzf over recent docs; zenity dropped. Amended 2026-07-30: whole-home sweep, symlinks followed (`fd -L`), gitignored included (`--no-ignore`), hidden dot-dirs excluded; roots/excludes/limit configurable via `[picker]` in config.toml |
+| D31 | First-class scripting surface: `lectorctl read <path|->`, stdin piping, `--text`, json `status` |
+| D32 | Super+R auto order is selection-first: highlight → Super+R reads it, clipboard is the fallback (accepted tradeoff: a stale highlight can shadow a fresh copy) |
 
 ## Architecture
 
@@ -68,7 +72,9 @@ renders), `index/` (RAG store, P4).
 2. **P1 read-aloud core** (usable v0) — capture → ingest → Kokoro → mpv; pause/stop/next;
    waybar state; long-doc threshold flow incl. section-by-section. **← checkpoint here**
 3. **P2 brain** — summarize/annotate via qwen3:4b; notes + clipboard outputs; Aperture
-   cloud profile behind config.
+   cloud profile behind config. Scope added 2026-07-30: **smart-read mode** — LLM rewrites
+   technical text (help output, tables, code-adjacent prose) into listenable narration
+   before TTS; deterministic `_normalize_for_speech` covers flags/commas until then.
 4. **P3 voice in** — push-to-talk dictation: Moonshine live partials, Parakeet final
    transcript → note + clipboard + wtype into focused window. Remove Super+F bind (D28).
 5. **P4 ask-the-doc** — RAG-lite index on ingest; hold-to-ask → answer → spoken + saved.
