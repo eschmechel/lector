@@ -29,7 +29,7 @@ cd ~/Repos/lector
 
 | Chord | Action |
 |---|---|
-| `Super+R` | read clipboard/selection aloud |
+| `Super+R` | read highlighted text aloud (falls back to clipboard) |
 | `Super+M` | menu — fzf in a floating kitty window (also a TUI: run `lectorctl menu` in any terminal) |
 | `Super+Space` | pause / resume |
 | `Super+Alt+Space` | stop |

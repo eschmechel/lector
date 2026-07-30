@@ -64,8 +64,8 @@ async def resolve_source(source: str = "auto", path: str | None = None) -> str |
         return await clipboard()
     if source == "selection":
         return await selection()
-    # auto: clipboard first, then primary selection
-    return await clipboard() or await selection()
+    # auto: highlighted text first (D32), clipboard as fallback
+    return await selection() or await clipboard()
 
 
 class InboxWatcher:

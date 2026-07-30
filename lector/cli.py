@@ -10,7 +10,7 @@ from . import config as C
 from .ipc import request
 
 MENU = [
-    ("Read clipboard/selection", "read"),
+    ("Read highlighted/clipboard", "read"),
     ("Read file…", "pick"),
     ("Summarize → read  (P2)", "summarize"),
     ("Annotate  (P2)", "annotate"),

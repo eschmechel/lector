@@ -64,6 +64,8 @@ def speech_normalizer():
     assert "read, summarize, annotate" in out, out
     out = chunk_text("it costs 1,000 dollars at -5 degrees in a well-known town")[0]
     assert "1,000" in out and "minus 5" in out and "well-known" in out, out
+    out = chunk_text("see https://open.spotify.com/show/0sxpFsg?si=f5a7 for details")[0]
+    assert out == "see link to open.spotify.com for details", out
 
 
 def uri_decoding():

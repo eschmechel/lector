@@ -77,6 +77,8 @@ def _normalize_for_speech(text: str) -> str:
     # un-spaced comma lists ("read,summarize,annotate") get rushed into one blob;
     # keep digit,digit intact so 1,000 stays a number
     text = re.sub(r",(?=[^\s\d])", ", ", text)
+    # raw URLs are unlistenable — speak just the host
+    text = re.sub(r"https?://([^/\s?#]+)\S*", r"link to \1", text)
     return text
 
 
