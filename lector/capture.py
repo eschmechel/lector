@@ -23,7 +23,9 @@ def as_doc_path(text: str) -> Path | None:
     if not text or "\n" in text or len(text) > 500:
         return None
     if text.startswith("file://"):
-        text = text[len("file://"):]
+        from urllib.parse import unquote, urlparse
+
+        text = unquote(urlparse(text).path)
     p = Path(text).expanduser()
     if p.is_file() and p.suffix.lower() in DOC_SUFFIXES:
         return p

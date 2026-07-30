@@ -50,6 +50,18 @@ def chunker():
     chunks = chunk_text("One. " * 500, limit=450)
     assert chunks and all(len(c) <= 450 for c in chunks)
     assert chunk_text("") == []
+    assert len(chunk_text("word " * 200)[0]) <= 140, "first chunk must stay small"
+
+
+def uri_decoding():
+    from .capture import as_doc_path
+
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "has space.md"
+        p.write_text("x")
+        uri = f"file://{str(p).replace(' ', '%20')}"
+        assert as_doc_path(uri) == p, "percent-encoded file URI must resolve"
+        assert as_doc_path(f"file://{p}\r") == p, "CRLF from uri-list must be tolerated"
 
 
 def tts_render():
@@ -71,6 +83,7 @@ def main() -> None:
     check("config loads", config_loads)
     check("ingest sample.md", ingest_fixture)
     check("text chunker", chunker)
+    check("file-URI decoding", uri_decoding)
     check("kokoro TTS render", tts_render)
     total = len(PASS) + len(SKIP) + len(FAIL)
     print(f"selftest: {len(PASS)} passed, {len(SKIP)} skipped, {len(FAIL)} failed (of {total})")

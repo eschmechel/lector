@@ -20,7 +20,7 @@ i9-13900H / 32GB RAM / RTX 4060 Max-Q 8GB.
 | D8 | Laptop is the host; all inference local-first, zero VRAM for TTS/STT (CPU) |
 | D9 | Text outputs → ~/Notes/lector/ as .md AND clipboard |
 | D10 | Audio: play by default; "keep that" action saves the render |
-| D11 | Long docs: threshold → notification asks read-all / section-by-section / cancel (+ summarize once P2 lands) |
+| D11 | Long docs: threshold → asks read-all / section-by-section / cancel (+ summarize once P2 lands). Amended 2026-07-30: the choice opens in the floating fzf chooser (`ui_ask`), NOT dunst actions — dunst actions are middle-click/rofi-menu only in this setup and proved unanswerable |
 | D12 | Resident daemon; mpv IPC; pause/resume/stop/next-section binds |
 | D13 | Kokoro default + Chatterbox HQ as explicit action (GPU-guarded vs Ollama) |
 | D14/D17 | Dual STT: Moonshine streams live partials, Parakeet finalizes on release |

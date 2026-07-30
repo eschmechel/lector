@@ -1,8 +1,12 @@
 import asyncio
 import datetime as dt
+import os
 import re
 import shutil
 import signal
+import sys
+import uuid
+from pathlib import Path
 
 from . import config as C
 from .capture import resolve_source
@@ -31,6 +35,7 @@ class Daemon:
         self._next_event = asyncio.Event()
         self._skip = False
         self._stopping = False
+        self._answers: dict[str, asyncio.Future] = {}
 
     # ------------------------------------------------------------- dispatch
 
@@ -52,10 +57,40 @@ class Daemon:
             return await self.keep()
         if cmd == "status":
             return {"ok": True, **self.state.get()}
+        if cmd == "answer":
+            fut = self._answers.pop(req.get("id", ""), None)
+            if fut and not fut.done():
+                fut.set_result(req.get("choice") or None)
+            return {"ok": True}
         if cmd in ("summarize", "annotate", "ask", "dictate"):
             await notify("Not yet", f"'{cmd}' arrives in a later phase — P1 is read-aloud only.")
             return {"ok": True, "pending_phase": True}
         return {"ok": False, "error": f"unknown command: {cmd}"}
+
+    # ------------------------------------------------------------- ui ask
+
+    async def ui_ask(self, summary: str, options: list[tuple[str, str]],
+                     timeout: float = 120.0) -> str | None:
+        """Ask via a floating fzf terminal (dunst actions are unreliable — middle-click
+        only in most configs). Returns the chosen key, or None on cancel/timeout."""
+        aid = uuid.uuid4().hex[:12]
+        fut: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._answers[aid] = fut
+        ctl = Path(sys.argv[0]).with_name("lectorctl")
+        term = os.environ.get("TERMINAL") or "kitty"
+        name = Path(term).name
+        clsflag = "--app-id=lector-menu" if name == "foot" else "--class=lector-menu"
+        pairs = [f"{k}={label}" for k, label in options]
+        try:
+            await asyncio.create_subprocess_exec(
+                term, clsflag, str(ctl), "answer", aid, summary, *pairs,
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+            )
+            return await asyncio.wait_for(fut, timeout)
+        except (asyncio.TimeoutError, FileNotFoundError):
+            return None
+        finally:
+            self._answers.pop(aid, None)
 
     # ------------------------------------------------------------- session
 
@@ -78,17 +113,17 @@ class Daemon:
             mode = "all"
             words = doc.word_count
             if words > self.cfg.long_doc_words:
-                choice = await ask(
-                    "Long document",
-                    f"{doc.title} — about {words} words "
-                    f"({len(doc.sections)} sections). How should I read it?",
+                choice = await self.ui_ask(
+                    f"{doc.title} — ~{words} words, {len(doc.sections)} sections",
                     [("all", "Read all"), ("sections", "Section by section"),
                      ("cancel", "Cancel")],
                 )
                 if choice in (None, "cancel"):
+                    await notify("Read cancelled", doc.title, timeout_ms=3000)
                     self.state.set(state="idle")
                     return
                 mode = choice
+            await notify("Reading", doc.title, timeout_ms=3000)
             self.session = asyncio.create_task(self._run_session(doc, mode))
         except Exception as e:  # noqa: BLE001
             await notify("lector error", str(e), urgency="critical")
@@ -209,8 +244,9 @@ class Daemon:
     # ------------------------------------------------------------- inbox
 
     async def on_inbox_file(self, path) -> None:
-        choice = await ask("New document in inbox", path.name,
-                           [("read", "Read aloud"), ("ignore", "Ignore")])
+        # single-action dunst notification: middle-click reads (dunst's do_action default)
+        choice = await ask("New document in inbox", f"{path.name} — middle-click to read",
+                           [("read", "Read aloud")])
         if choice == "read":
             await self.start_read("file", str(path))
 
@@ -221,6 +257,7 @@ async def amain() -> None:
     daemon = Daemon(cfg)
     daemon.state.set(state="idle")
     server = await serve(C.CTL_SOCKET, daemon.handle)
+    asyncio.ensure_future(asyncio.to_thread(daemon.tts.warmup))
 
     watcher = None
     if cfg.inbox_enabled:

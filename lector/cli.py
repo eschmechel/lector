@@ -48,17 +48,25 @@ def spawn_floating(*ctl_args: str) -> None:
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-def fzf_choose(options: list[str], prompt: str) -> str | None:
+def fzf_choose(options: list[str], prompt: str, header: str | None = None) -> str | None:
+    cmd = ["fzf", "--reverse", "--no-info", f"--prompt={prompt}> "]
+    if header:
+        cmd.append(f"--header={header}")
     try:
-        res = subprocess.run(
-            ["fzf", "--reverse", "--no-info", f"--prompt={prompt}> "],
-            input="\n".join(options), capture_output=True, text=True,
-        )
+        res = subprocess.run(cmd, input="\n".join(options), capture_output=True, text=True)
     except FileNotFoundError:
         print("fzf not found", file=sys.stderr)
         sys.exit(1)
     choice = res.stdout.strip()
     return choice or None
+
+
+def run_answer(aid: str, summary: str, pairs: list[str]) -> None:
+    """Chooser UI spawned by the daemon's ui_ask; reports the pick back over the socket."""
+    options = [p.split("=", 1) for p in pairs if "=" in p]
+    choice = fzf_choose([label for _, label in options], "lector", header=summary)
+    key = next((k for k, label in options if label == choice), "")
+    send("answer", id=aid, choice=key)
 
 
 def find_docs() -> list[str]:
@@ -184,8 +192,15 @@ def main() -> None:
     p_status = sub.add_parser("status")
     p_status.add_argument("--waybar", action="store_true")
 
+    p_answer = sub.add_parser("answer")  # internal: daemon ui_ask chooser
+    p_answer.add_argument("id")
+    p_answer.add_argument("summary")
+    p_answer.add_argument("pairs", nargs="*")
+
     ns = parser.parse_args()
-    if ns.command == "menu":
+    if ns.command == "answer":
+        run_answer(ns.id, ns.summary, ns.pairs)
+    elif ns.command == "menu":
         run_menu()
     elif ns.command == "status":
         run_status(ns.waybar)

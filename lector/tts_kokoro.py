@@ -46,8 +46,17 @@ class KokoroTTS:
         sf.write(str(out_path), samples, sample_rate)
         return out_path
 
+    def warmup(self) -> None:
+        """Load the model and JIT the first inference so the first real read is fast."""
+        import tempfile
 
-def chunk_text(text: str, limit: int = 450) -> list[str]:
+        if not self.models_present():
+            return
+        with tempfile.TemporaryDirectory() as td:
+            self.synth("Ready.", Path(td) / "warmup.wav")
+
+
+def chunk_text(text: str, limit: int = 450, first_limit: int = 140) -> list[str]:
     """Split into TTS-sized chunks on sentence, then word boundaries."""
     sentences: list[str] = []
     for para in re.split(r"\n\s*\n", text):
@@ -74,4 +83,12 @@ def chunk_text(text: str, limit: int = 450) -> list[str]:
             cur = f"{cur} {s}".strip()
     if cur:
         chunks.append(cur)
-    return [c for c in chunks if re.search(r"\w", c)]
+    chunks = [c for c in chunks if re.search(r"\w", c)]
+
+    # Keep the first chunk short so audio starts fast; later chunks synth during playback.
+    if chunks and first_limit and len(chunks[0]) > first_limit:
+        head = chunks[0]
+        m = re.search(r"^(.{20,%d}[.!?])\s" % first_limit, head)
+        cut = m.end(1) if m else max(head.rfind(" ", 0, first_limit), 1)
+        chunks[0:1] = [head[:cut].strip(), head[cut:].strip()]
+    return chunks
