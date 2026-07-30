@@ -1,21 +1,26 @@
 import argparse
 import json
+import os
+import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 from . import config as C
 from .ipc import request
 
 MENU = [
-    ("Read clipboard/selection", ("read", {})),
-    ("Read file…", ("read", {"source": "file"})),
-    ("Summarize → read  (P2)", ("summarize", {})),
-    ("Annotate  (P2)", ("annotate", {})),
-    ("Pause / Resume", ("pause", {})),
-    ("Next section", ("next", {})),
-    ("Keep last audio", ("keep", {})),
-    ("Stop", ("stop", {})),
+    ("Read clipboard/selection", "read"),
+    ("Read file…", "pick"),
+    ("Summarize → read  (P2)", "summarize"),
+    ("Annotate  (P2)", "annotate"),
+    ("Pause / Resume", "pause"),
+    ("Next section", "next"),
+    ("Keep last audio", "keep"),
+    ("Stop", "stop"),
 ]
+
+SEARCH_DIRS = ["~/Notes", "~/Documents", "~/Downloads", "~/Repos"]
 
 
 def send(cmd: str, **args) -> dict:
@@ -26,40 +31,132 @@ def send(cmd: str, **args) -> dict:
         sys.exit(1)
 
 
-def menu() -> None:
-    labels = "\n".join(label for label, _ in MENU)
+# ---------------------------------------------------------------- tui / float
+
+def in_tty() -> bool:
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def spawn_floating(*ctl_args: str) -> None:
+    """Re-run this lectorctl command inside a floating terminal (lector-menu class)."""
+    ctl = str(Path(sys.argv[0]).resolve())
+    term = os.environ.get("TERMINAL") or "kitty"
+    name = Path(term).name
+    if name in ("kitty", "foot", "ghostty"):
+        clsflag = "--app-id=lector-menu" if name == "foot" else "--class=lector-menu"
+        argv = [term, clsflag, ctl, *ctl_args]
+    else:
+        argv = [term, "--class", "lector-menu", "-e", ctl, *ctl_args]
+    subprocess.Popen(argv, start_new_session=True,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def fzf_choose(options: list[str], prompt: str) -> str | None:
     try:
-        out = subprocess.run(
-            ["rofi", "-dmenu", "-i", "-p", "lector"],
-            input=labels, capture_output=True, text=True,
-        ).stdout.strip()
+        res = subprocess.run(
+            ["fzf", "--reverse", "--no-info", f"--prompt={prompt}> "],
+            input="\n".join(options), capture_output=True, text=True,
+        )
     except FileNotFoundError:
-        print("rofi not found", file=sys.stderr)
+        print("fzf not found", file=sys.stderr)
         sys.exit(1)
-    for label, (cmd, args) in MENU:
-        if label == out:
-            send(cmd, **args)
+    choice = res.stdout.strip()
+    return choice or None
+
+
+def find_docs(limit: int = 400) -> list[str]:
+    dirs = [str(Path(d).expanduser()) for d in SEARCH_DIRS if Path(d).expanduser().is_dir()]
+    if not dirs:
+        return []
+    if shutil.which("fd"):
+        cmd = ["fd", "-a", "-t", "f", "-e", "md", "-e", "txt", "-e", "pdf", ".", *dirs]
+    else:
+        cmd = ["find", *dirs, "-type", "f",
+               "(", "-name", "*.md", "-o", "-name", "*.txt", "-o", "-name", "*.pdf", ")"]
+    out = subprocess.run(cmd, capture_output=True, text=True).stdout.splitlines()
+    out.sort(key=lambda p: Path(p).stat().st_mtime if Path(p).exists() else 0, reverse=True)
+    return out[:limit]
+
+
+def pick_file_tui() -> str | None:
+    files = find_docs()
+    if not files:
+        print("no documents found under " + ", ".join(SEARCH_DIRS), file=sys.stderr)
+        return None
+    home = str(Path.home())
+    shown = [f.replace(home, "~", 1) for f in files]
+    choice = fzf_choose(shown, "read file")
+    return str(Path(choice.replace("~", home, 1))) if choice else None
+
+
+def run_menu() -> None:
+    if not in_tty():
+        spawn_floating("menu")
+        return
+    choice = fzf_choose([label for label, _ in MENU], "lector")
+    if not choice:
+        return
+    action = dict(MENU)[choice]
+    if action == "pick":
+        path = pick_file_tui()
+        if path:
+            send("read", source="file", path=path)
+    else:
+        send(action)
+
+
+# ---------------------------------------------------------------- commands
+
+def run_read(ns) -> None:
+    path = ns.path or ns.file
+    if path == "-" or (path is None and ns.text is None
+                       and ns.source == "auto" and not sys.stdin.isatty()):
+        text = sys.stdin.read()
+        if not text.strip():
+            print("empty stdin", file=sys.stderr)
+            sys.exit(1)
+        send("read", text=text)
+        return
+    if ns.text is not None:
+        send("read", text=ns.text)
+        return
+    if path:
+        send("read", source="file", path=str(Path(path).expanduser().resolve()))
+        return
+    if ns.source == "file":
+        if not in_tty():
+            spawn_floating("read", "--source", "file")
             return
+        picked = pick_file_tui()
+        if picked:
+            send("read", source="file", path=picked)
+        return
+    send("read", source=ns.source)
 
 
-def status(waybar: bool) -> None:
+def run_status(waybar: bool) -> None:
     resp = send("status")
+    resp.pop("ok", None)
     if waybar:
-        # kept for compatibility; waybar normally uses lector-status.sh directly
         print(json.dumps({"text": resp.get("state", "idle")}))
     else:
-        resp.pop("ok", None)
         print(json.dumps(resp, indent=2))
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(prog="lectorctl", description="Control the lector daemon")
+    parser = argparse.ArgumentParser(
+        prog="lectorctl", description="Control the lector daemon",
+        epilog="scripting: `lectorctl read doc.pdf`, `cat notes.md | lectorctl read -`, "
+               "`lectorctl read --text 'hello'`, `lectorctl status` (json)")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_read = sub.add_parser("read", help="read a document aloud")
+    p_read.add_argument("path", nargs="?", default=None,
+                        help="file to read, or '-' for stdin")
+    p_read.add_argument("--text", default=None, help="read this literal text")
     p_read.add_argument("--source", choices=["auto", "clipboard", "selection", "file"],
                         default="auto")
-    p_read.add_argument("--file", dest="path", default=None)
+    p_read.add_argument("--file", dest="file", default=None, help=argparse.SUPPRESS)
 
     for name in ("summarize", "annotate", "pause", "stop", "next", "keep", "menu"):
         sub.add_parser(name)
@@ -69,16 +166,11 @@ def main() -> None:
 
     ns = parser.parse_args()
     if ns.command == "menu":
-        menu()
+        run_menu()
     elif ns.command == "status":
-        status(ns.waybar)
+        run_status(ns.waybar)
     elif ns.command == "read":
-        path = ns.path
-        if path:
-            from pathlib import Path
-
-            path = str(Path(path).expanduser().resolve())
-        send("read", source=ns.source, path=path)
+        run_read(ns)
     else:
         send(ns.command)
 

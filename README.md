@@ -30,7 +30,7 @@ cd ~/Repos/lector
 | Chord | Action |
 |---|---|
 | `Super+R` | read clipboard/selection aloud |
-| `Super+M` | rofi menu (all actions + file picker) |
+| `Super+M` | menu — fzf in a floating kitty window (also a TUI: run `lectorctl menu` in any terminal) |
 | `Super+Space` | pause / resume |
 | `Super+Alt+Space` | stop |
 | `Super+N` | next section |
@@ -40,11 +40,16 @@ Binds use HyDE's `bindd` form, so they show up in the `Super+/` keybind hint.
 Docs over ~1500 words trigger a notification: read all / section-by-section / cancel.
 Drop files into `~/Notes/lector/inbox/` to get a "read this?" notification.
 
-## CLI
+## CLI / scripting
 
 ```sh
-lectorctl read [--source auto|clipboard|selection|file] [--file PATH]
-lectorctl pause | stop | next | keep | status | menu
+lectorctl read doc.pdf                  # read a file
+cat notes.md | lectorctl read -         # pipe text in (also: cmd | lectorctl read)
+lectorctl read --text "hello there"     # literal text
+lectorctl read --source file            # fzf file picker (recent docs via fd)
+lectorctl pause | stop | next | keep
+lectorctl status                        # json — script-friendly
+lectorctl menu                          # fzf TUI in your terminal; floating kitty from a bind
 ```
 
 ## Smoke

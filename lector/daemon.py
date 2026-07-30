@@ -37,7 +37,9 @@ class Daemon:
     async def handle(self, req: dict) -> dict:
         cmd = req.get("cmd")
         if cmd == "read":
-            asyncio.ensure_future(self.start_read(req.get("source", "auto"), req.get("path")))
+            asyncio.ensure_future(
+                self.start_read(req.get("source", "auto"), req.get("path"), req.get("text"))
+            )
             return {"ok": True, "queued": True}
         if cmd == "pause":
             return await self.pause()
@@ -57,11 +59,12 @@ class Daemon:
 
     # ------------------------------------------------------------- session
 
-    async def start_read(self, source: str = "auto", path: str | None = None) -> None:
+    async def start_read(self, source: str = "auto", path: str | None = None,
+                         text: str | None = None) -> None:
         try:
             await self.stop_session()
             self.state.set(state="processing")
-            value = await resolve_source(source, path)
+            value = text if text and text.strip() else await resolve_source(source, path)
             if value is None:
                 await notify("Nothing to read", "Clipboard and selection are empty.")
                 self.state.set(state="idle")

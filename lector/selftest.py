@@ -20,7 +20,7 @@ def check(name: str, fn) -> None:
 
 
 def binaries():
-    missing = [b for b in ("mpv", "wl-paste", "dunstify", "rofi", "zenity") if not shutil.which(b)]
+    missing = [b for b in ("mpv", "wl-paste", "dunstify", "fzf") if not shutil.which(b)]
     assert not missing, f"missing binaries: {missing}"
 
 

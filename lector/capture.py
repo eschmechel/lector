@@ -52,22 +52,12 @@ async def selection() -> str | Path | None:
     return as_doc_path(text) or text
 
 
-async def pick_file() -> Path | None:
-    out = await _run(
-        "zenity", "--file-selection", "--title", "lector — choose a document",
-        "--file-filter", "Documents | *.pdf *.md *.txt", "--file-filter", "All files | *",
-    )
-    if not out or not out.strip():
-        return None
-    return Path(out.strip())
-
-
 async def resolve_source(source: str = "auto", path: str | None = None) -> str | Path | None:
     if path:
         p = Path(path).expanduser()
         return p if p.is_file() else None
     if source == "file":
-        return await pick_file()
+        return None  # file picking happens client-side (lectorctl fzf picker)
     if source == "clipboard":
         return await clipboard()
     if source == "selection":
