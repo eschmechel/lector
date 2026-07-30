@@ -1,6 +1,6 @@
 import os
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 CONFIG_PATH = Path(os.environ.get("XDG_CONFIG_HOME", "~/.config")).expanduser() / "lector" / "config.toml"
@@ -23,6 +23,9 @@ class Config:
     speed: float = 1.0
     long_doc_words: int = 1500
     inbox_enabled: bool = True
+    picker_dirs: list[Path] = field(default_factory=lambda: [Path("~").expanduser()])
+    picker_exclude: list[str] = field(default_factory=lambda: ["node_modules", "__pycache__"])
+    picker_limit: int = 4000
 
     @property
     def inbox_dir(self) -> Path:
@@ -50,6 +53,7 @@ def load() -> Config:
     tts = raw.get("tts", {})
     read = raw.get("read", {})
     inbox = raw.get("inbox", {})
+    picker = raw.get("picker", {})
     return Config(
         notes_dir=Path(paths.get("notes_dir", "~/Notes/lector")).expanduser(),
         models_dir=Path(paths.get("models_dir", "~/.local/share/lector/models")).expanduser(),
@@ -57,4 +61,7 @@ def load() -> Config:
         speed=float(tts.get("speed", 1.0)),
         long_doc_words=int(read.get("long_doc_words", 1500)),
         inbox_enabled=bool(inbox.get("enabled", True)),
+        picker_dirs=[Path(d).expanduser() for d in picker.get("dirs", ["~"])],
+        picker_exclude=list(picker.get("exclude", ["node_modules", "__pycache__"])),
+        picker_limit=int(picker.get("limit", 4000)),
     )

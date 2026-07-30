@@ -46,7 +46,9 @@ Drop files into `~/Notes/lector/inbox/` to get a "read this?" notification.
 lectorctl read doc.pdf                  # read a file
 cat notes.md | lectorctl read -         # pipe text in (also: cmd | lectorctl read)
 lectorctl read --text "hello there"     # literal text
-lectorctl read --source file            # fzf file picker (recent docs via fd)
+lectorctl read --source file            # fzf picker over your home dir (symlinks followed,
+                                        #   gitignored included, hidden dirs skipped;
+                                        #   [picker] section in config.toml to tune)
 lectorctl pause | stop | next | keep
 lectorctl status                        # json — script-friendly
 lectorctl menu                          # fzf TUI in your terminal; floating kitty from a bind

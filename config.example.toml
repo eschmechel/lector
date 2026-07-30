@@ -15,3 +15,10 @@ long_doc_words = 1500
 [inbox]
 # Watch <notes_dir>/inbox for dropped .md/.txt/.pdf files
 enabled = true
+
+[picker]
+# File-picker search roots. Symlinks are followed; gitignored files are included;
+# hidden dot-directories are always skipped (this prunes .git/.venv/.cache for free).
+dirs = ["~"]
+exclude = ["node_modules", "__pycache__"]   # non-hidden junk dirs to skip
+limit = 4000                                # max entries offered to fzf (newest first)

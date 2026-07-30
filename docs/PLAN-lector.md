@@ -38,7 +38,7 @@ i9-13900H / 32GB RAM / RTX 4060 Max-Q 8GB.
 | D27 | Binds use HyDE `bindd` + description so they appear in the Super+/ hint viewer (hint reads `hyprctl binds -j`) |
 | D28 | Existing `Super+F → ~/bin/stt-medium-toggle` (keybindings.conf:221) is removed at P3 when lector dictation replaces it; dead `Super+H → voxd` bind is taken over at P3 |
 | D29 | No rofi/wofi: the menu is fzf in a floating kitty window (`lector-menu` class, windowrules in lector-binds.conf), tty-aware — inline TUI when run from a terminal |
-| D30 | File picker matches: fzf over recent docs (fd across ~/Notes, ~/Documents, ~/Downloads, ~/Repos); zenity dropped |
+| D30 | File picker matches: fzf over recent docs; zenity dropped. Amended 2026-07-30: whole-home sweep, symlinks followed (`fd -L`), gitignored included (`--no-ignore`), hidden dot-dirs excluded; roots/excludes/limit configurable via `[picker]` in config.toml |
 | D31 | First-class scripting surface: `lectorctl read <path|->`, stdin piping, `--text`, json `status` |
 
 ## Architecture

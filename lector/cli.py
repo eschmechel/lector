@@ -20,9 +20,6 @@ MENU = [
     ("Stop", "stop"),
 ]
 
-SEARCH_DIRS = ["~/Notes", "~/Documents", "~/Downloads", "~/Repos"]
-
-
 def send(cmd: str, **args) -> dict:
     try:
         return request(C.CTL_SOCKET, cmd, **args)
@@ -64,24 +61,47 @@ def fzf_choose(options: list[str], prompt: str) -> str | None:
     return choice or None
 
 
-def find_docs(limit: int = 400) -> list[str]:
-    dirs = [str(Path(d).expanduser()) for d in SEARCH_DIRS if Path(d).expanduser().is_dir()]
+def find_docs() -> list[str]:
+    cfg = C.load()
+    dirs = [str(d) for d in cfg.picker_dirs if d.is_dir()]
     if not dirs:
         return []
     if shutil.which("fd"):
-        cmd = ["fd", "-a", "-t", "f", "-e", "md", "-e", "txt", "-e", "pdf", ".", *dirs]
+        # -L: follow symlinks (type check applies to the target); --no-ignore: include
+        # gitignored files. Hidden dot-dirs stay excluded (fd default).
+        cmd = ["fd", "-a", "-L", "--no-ignore", "-t", "f",
+               "-e", "md", "-e", "txt", "-e", "pdf"]
+        for ex in cfg.picker_exclude:
+            cmd += ["-E", ex]
+        cmd += [".", *dirs]
     else:
-        cmd = ["find", *dirs, "-type", "f",
+        cmd = ["find", "-L", *dirs, "-name", ".*", "-prune", "-o", "-type", "f",
                "(", "-name", "*.md", "-o", "-name", "*.txt", "-o", "-name", "*.pdf", ")"]
+        for ex in cfg.picker_exclude:
+            cmd += ["-not", "-path", f"*/{ex}/*"]
+        cmd += ["-print"]
     out = subprocess.run(cmd, capture_output=True, text=True).stdout.splitlines()
-    out.sort(key=lambda p: Path(p).stat().st_mtime if Path(p).exists() else 0, reverse=True)
-    return out[:limit]
+
+    seen: set[str] = set()
+    unique: list[tuple[float, str]] = []
+    for p in out:
+        try:
+            path = Path(p)
+            real = str(path.resolve())
+            if real in seen:
+                continue
+            seen.add(real)
+            unique.append((path.stat().st_mtime, p))
+        except OSError:
+            continue
+    unique.sort(reverse=True)
+    return [p for _, p in unique[: cfg.picker_limit]]
 
 
 def pick_file_tui() -> str | None:
     files = find_docs()
     if not files:
-        print("no documents found under " + ", ".join(SEARCH_DIRS), file=sys.stderr)
+        print("no documents found under configured picker dirs", file=sys.stderr)
         return None
     home = str(Path.home())
     shown = [f.replace(home, "~", 1) for f in files]
