@@ -68,9 +68,22 @@ _UNSPEAKABLE = re.compile(
 )
 
 
+def _normalize_for_speech(text: str) -> str:
+    """Rewrite constructs the TTS engine mangles into speakable forms."""
+    # CLI flags: espeak swallows the dashes, turning "-h, --help" into "h, help"
+    text = re.sub(r"(?<![\w-])--(?=[A-Za-z])", "dash dash ", text)
+    text = re.sub(r"(?<![\w-])-(?=[A-Za-z]\w*)", "dash ", text)
+    text = re.sub(r"(?<![\w-])-(?=\d)", "minus ", text)
+    # un-spaced comma lists ("read,summarize,annotate") get rushed into one blob;
+    # keep digit,digit intact so 1,000 stays a number
+    text = re.sub(r",(?=[^\s\d])", ", ", text)
+    return text
+
+
 def chunk_text(text: str, limit: int = 450, first_limit: int = 140) -> list[str]:
     """Split into TTS-sized chunks on sentence, then word boundaries."""
     text = _UNSPEAKABLE.sub(" ", text)
+    text = _normalize_for_speech(text)
     sentences: list[str] = []
     for para in re.split(r"\n\s*\n", text):
         para = " ".join(para.split())

@@ -71,7 +71,9 @@ renders), `index/` (RAG store, P4).
 2. **P1 read-aloud core** (usable v0) — capture → ingest → Kokoro → mpv; pause/stop/next;
    waybar state; long-doc threshold flow incl. section-by-section. **← checkpoint here**
 3. **P2 brain** — summarize/annotate via qwen3:4b; notes + clipboard outputs; Aperture
-   cloud profile behind config.
+   cloud profile behind config. Scope added 2026-07-30: **smart-read mode** — LLM rewrites
+   technical text (help output, tables, code-adjacent prose) into listenable narration
+   before TTS; deterministic `_normalize_for_speech` covers flags/commas until then.
 4. **P3 voice in** — push-to-talk dictation: Moonshine live partials, Parakeet final
    transcript → note + clipboard + wtype into focused window. Remove Super+F bind (D28).
 5. **P4 ask-the-doc** — RAG-lite index on ingest; hold-to-ask → answer → spoken + saved.

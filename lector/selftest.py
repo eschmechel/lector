@@ -55,6 +55,17 @@ def chunker():
     assert glyphy == ["~ hello world"], f"glyphs must be stripped, got {glyphy!r}"
 
 
+def speech_normalizer():
+    from .tts_kokoro import chunk_text
+
+    out = chunk_text("-h, --help            show this help message and exit")[0]
+    assert "dash h" in out and "dash dash help" in out, out
+    out = chunk_text("choose from read,summarize,annotate")[0]
+    assert "read, summarize, annotate" in out, out
+    out = chunk_text("it costs 1,000 dollars at -5 degrees in a well-known town")[0]
+    assert "1,000" in out and "minus 5" in out and "well-known" in out, out
+
+
 def uri_decoding():
     from .capture import as_doc_path
 
@@ -85,6 +96,7 @@ def main() -> None:
     check("config loads", config_loads)
     check("ingest sample.md", ingest_fixture)
     check("text chunker", chunker)
+    check("speech normalizer", speech_normalizer)
     check("file-URI decoding", uri_decoding)
     check("kokoro TTS render", tts_render)
     total = len(PASS) + len(SKIP) + len(FAIL)
