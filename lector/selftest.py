@@ -51,6 +51,8 @@ def chunker():
     assert chunks and all(len(c) <= 450 for c in chunks)
     assert chunk_text("") == []
     assert len(chunk_text("word " * 200)[0]) <= 140, "first chunk must stay small"
+    glyphy = chunk_text("\U000f08c7  ~ ❯ hello world")
+    assert glyphy == ["~ hello world"], f"glyphs must be stripped, got {glyphy!r}"
 
 
 def uri_decoding():

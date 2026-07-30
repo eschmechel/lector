@@ -176,7 +176,7 @@ def main() -> None:
         prog="lectorctl", description="Control the lector daemon",
         epilog="scripting: `lectorctl read doc.pdf`, `cat notes.md | lectorctl read -`, "
                "`lectorctl read --text 'hello'`, `lectorctl status` (json)")
-    sub = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(dest="command")
 
     p_read = sub.add_parser("read", help="read a document aloud")
     p_read.add_argument("path", nargs="?", default=None,
@@ -186,7 +186,7 @@ def main() -> None:
                         default="auto")
     p_read.add_argument("--file", dest="file", default=None, help=argparse.SUPPRESS)
 
-    for name in ("summarize", "annotate", "pause", "stop", "next", "keep", "menu"):
+    for name in ("summarize", "annotate", "pause", "stop", "next", "keep", "menu", "help"):
         sub.add_parser(name)
 
     p_status = sub.add_parser("status")
@@ -198,7 +198,9 @@ def main() -> None:
     p_answer.add_argument("pairs", nargs="*")
 
     ns = parser.parse_args()
-    if ns.command == "answer":
+    if ns.command in (None, "help"):
+        parser.print_help()
+    elif ns.command == "answer":
         run_answer(ns.id, ns.summary, ns.pairs)
     elif ns.command == "menu":
         run_menu()

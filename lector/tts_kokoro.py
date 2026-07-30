@@ -56,8 +56,21 @@ class KokoroTTS:
             self.synth("Ready.", Path(td) / "warmup.wav")
 
 
+# Codepoints TTS should never try to vocalize: private-use (nerd-font icons),
+# box drawing/geometric shapes, misc symbols/dingbats, and the emoji planes.
+_UNSPEAKABLE = re.compile(
+    "[\u2500-\u257f"          # box drawing
+    "\u25a0-\u25ff"           # geometric shapes
+    "\u2600-\u27bf"           # misc symbols + dingbats (incl. \u276f)
+    "\ue000-\uf8ff"           # BMP private use (nerd-font icons)
+    "\U000f0000-\U000ffffd"   # plane-15 private use (material nerd icons)
+    "\U0001f000-\U0001faff]"  # emoji planes
+)
+
+
 def chunk_text(text: str, limit: int = 450, first_limit: int = 140) -> list[str]:
     """Split into TTS-sized chunks on sentence, then word boundaries."""
+    text = _UNSPEAKABLE.sub(" ", text)
     sentences: list[str] = []
     for para in re.split(r"\n\s*\n", text):
         para = " ".join(para.split())

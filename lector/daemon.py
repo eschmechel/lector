@@ -123,9 +123,11 @@ class Daemon:
                     self.state.set(state="idle")
                     return
                 mode = choice
+            print(f"reading {doc.title!r} (~{words} words, mode={mode})", flush=True)
             await notify("Reading", doc.title, timeout_ms=3000)
             self.session = asyncio.create_task(self._run_session(doc, mode))
         except Exception as e:  # noqa: BLE001
+            print(f"read failed: {type(e).__name__}: {e}", flush=True)
             await notify("lector error", str(e), urgency="critical")
             self.state.set(state="idle")
 
@@ -160,6 +162,7 @@ class Daemon:
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001
+            print(f"read failed: {type(e).__name__}: {e}", flush=True)
             await notify("lector error", str(e), urgency="critical")
             self.state.set(state="idle")
 
