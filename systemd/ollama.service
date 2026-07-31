@@ -1,0 +1,13 @@
+[Unit]
+Description=Ollama LLM server (user)
+After=default.target
+
+[Service]
+ExecStart=/usr/bin/ollama serve
+Restart=on-failure
+RestartSec=2
+# keep the model resident between lector calls; unloads after 30m idle
+Environment=OLLAMA_KEEP_ALIVE=30m
+
+[Install]
+WantedBy=default.target

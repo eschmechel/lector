@@ -9,6 +9,7 @@ import uuid
 from pathlib import Path
 
 from . import config as C
+from .brain import Brain, BrainUnavailable
 from .capture import resolve_source
 from .ingest import Doc, load_source
 from .ipc import serve
@@ -28,6 +29,7 @@ class Daemon:
         self.cfg = cfg
         self.state = StateFile(C.STATE_FILE)
         self.tts = KokoroTTS(cfg.models_dir, cfg.voice, cfg.speed)
+        self.brain = Brain(cfg)
         self.player: Player | None = None
         self.session: asyncio.Task | None = None
         self.current_doc: Doc | None = None
@@ -36,15 +38,25 @@ class Daemon:
         self._skip = False
         self._stopping = False
         self._answers: dict[str, asyncio.Future] = {}
+        self._fg_task: asyncio.Task | None = None  # in-flight read/brain pipeline
 
     # ------------------------------------------------------------- dispatch
 
     async def handle(self, req: dict) -> dict:
         cmd = req.get("cmd")
         if cmd == "read":
-            asyncio.ensure_future(
-                self.start_read(req.get("source", "auto"), req.get("path"), req.get("text"))
-            )
+            if req.get("smart"):
+                asyncio.ensure_future(self.start_brain(
+                    "smart", req.get("source", "auto"), req.get("path"),
+                    req.get("text"), bool(req.get("cloud"))))
+            else:
+                asyncio.ensure_future(self.start_read(
+                    req.get("source", "auto"), req.get("path"), req.get("text")))
+            return {"ok": True, "queued": True}
+        if cmd in ("summarize", "annotate"):
+            asyncio.ensure_future(self.start_brain(
+                cmd, req.get("source", "auto"), req.get("path"),
+                req.get("text"), bool(req.get("cloud"))))
             return {"ok": True, "queued": True}
         if cmd == "pause":
             return await self.pause()
@@ -62,8 +74,8 @@ class Daemon:
             if fut and not fut.done():
                 fut.set_result(req.get("choice") or None)
             return {"ok": True}
-        if cmd in ("summarize", "annotate", "ask", "dictate"):
-            await notify("Not yet", f"'{cmd}' arrives in a later phase — P1 is read-aloud only.")
+        if cmd in ("ask", "dictate"):
+            await notify("Not yet", f"'{cmd}' arrives in a later phase (P3/P4).")
             return {"ok": True, "pending_phase": True}
         return {"ok": False, "error": f"unknown command: {cmd}"}
 
@@ -94,19 +106,26 @@ class Daemon:
 
     # ------------------------------------------------------------- session
 
+    async def _load_doc(self, source: str, path: str | None,
+                        text: str | None) -> Doc | None:
+        value = text if text and text.strip() else await resolve_source(source, path)
+        if value is None:
+            await notify("Nothing to read", "Nothing highlighted or in the clipboard.")
+            return None
+        doc = await asyncio.to_thread(load_source, value)
+        if not doc.word_count:
+            await notify("Nothing to read", f"No text found in {doc.title!r}.")
+            return None
+        return doc
+
     async def start_read(self, source: str = "auto", path: str | None = None,
                          text: str | None = None) -> None:
         try:
             await self.stop_session()
+            self._fg_task = asyncio.current_task()
             self.state.set(state="processing")
-            value = text if text and text.strip() else await resolve_source(source, path)
-            if value is None:
-                await notify("Nothing to read", "Clipboard and selection are empty.")
-                self.state.set(state="idle")
-                return
-            doc = await asyncio.to_thread(load_source, value)
-            if not doc.word_count:
-                await notify("Nothing to read", f"No text found in {doc.title!r}.")
+            doc = await self._load_doc(source, path, text)
+            if doc is None:
                 self.state.set(state="idle")
                 return
 
@@ -116,11 +135,14 @@ class Daemon:
                 choice = await self.ui_ask(
                     f"{doc.title} — ~{words} words, {len(doc.sections)} sections",
                     [("all", "Read all"), ("sections", "Section by section"),
-                     ("cancel", "Cancel")],
+                     ("summarize", "Summarize instead"), ("cancel", "Cancel")],
                 )
                 if choice in (None, "cancel"):
                     await notify("Read cancelled", doc.title, timeout_ms=3000)
                     self.state.set(state="idle")
+                    return
+                if choice == "summarize":
+                    await self.start_brain("summarize", doc=doc)
                     return
                 mode = choice
             print(f"reading {doc.title!r} (~{words} words, mode={mode})", flush=True)
@@ -130,6 +152,68 @@ class Daemon:
             print(f"read failed: {type(e).__name__}: {e}", flush=True)
             await notify("lector error", str(e), urgency="critical")
             self.state.set(state="idle")
+
+    async def start_brain(self, mode: str, source: str = "auto",
+                          path: str | None = None, text: str | None = None,
+                          cloud: bool = False, doc: Doc | None = None) -> None:
+        verb = {"summarize": "Summarizing", "annotate": "Annotating",
+                "smart": "Rewriting for listening"}[mode]
+        try:
+            await self.stop_session()
+            self._fg_task = asyncio.current_task()
+            self.state.set(state="processing")
+            if doc is None:
+                doc = await self._load_doc(source, path, text)
+            if doc is None:
+                self.state.set(state="idle")
+                return
+            await notify(verb, doc.title, timeout_ms=4000)
+            print(f"{mode}: {doc.title!r} (~{doc.word_count} words, "
+                  f"cloud={cloud})", flush=True)
+            full_text = "\n\n".join(
+                f"## {s.title}\n\n{s.text}" if s.title else s.text
+                for s in doc.sections)
+            result = await asyncio.to_thread(
+                self.brain.run, mode, doc.title, full_text, cloud)
+            if not result.strip():
+                await notify("lector error", f"{mode} produced no output",
+                             urgency="critical")
+                self.state.set(state="idle")
+                return
+
+            if mode in ("summarize", "annotate"):
+                out = await self._save_note(mode, doc.title, result)
+                await self._copy_to_clipboard(result)
+                await notify(f"{mode.capitalize()} saved (and on clipboard)", str(out))
+            if mode in ("summarize", "smart"):
+                spoken = load_source(result)
+                spoken.title = f"{doc.title} ({mode})"
+                self.session = asyncio.create_task(self._run_session(spoken, "all"))
+            else:
+                self.state.set(state="idle")
+        except BrainUnavailable as e:
+            print(f"{mode} failed: {e}", flush=True)
+            await notify("lector: LLM unavailable", str(e), urgency="critical")
+            self.state.set(state="idle")
+        except Exception as e:  # noqa: BLE001
+            print(f"{mode} failed: {type(e).__name__}: {e}", flush=True)
+            await notify("lector error", str(e), urgency="critical")
+            self.state.set(state="idle")
+
+    async def _save_note(self, mode: str, title: str, body: str):
+        stamp = dt.datetime.now().strftime("%Y%m%d-%H%M")
+        out = self.cfg.notes_out_dir / f"{slugify(title)}-{mode}-{stamp}.md"
+        model = (self.cfg.llm_cloud_model if self.cfg.llm_provider == "cloud"
+                 else self.cfg.llm_local_model)
+        out.write_text(f"---\nsource: {title}\nmode: {mode}\nmodel: {model}\n"
+                       f"date: {dt.datetime.now():%Y-%m-%d %H:%M}\n---\n\n{body}\n")
+        return out
+
+    async def _copy_to_clipboard(self, text: str) -> None:
+        proc = await asyncio.create_subprocess_exec(
+            "wl-copy", stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+        await proc.communicate(text.encode())
 
     async def _run_session(self, doc: Doc, mode: str) -> None:
         self.current_doc = doc
@@ -207,6 +291,14 @@ class Daemon:
         return {"ok": True, "noop": True}
 
     async def stop_session(self) -> None:
+        cur = asyncio.current_task()
+        if self._fg_task and self._fg_task is not cur and not self._fg_task.done():
+            self._fg_task.cancel()
+            try:
+                await self._fg_task
+            except asyncio.CancelledError:
+                pass
+            self._fg_task = None
         if self.session and not self.session.done():
             self._stopping = True
             self._next_event.set()

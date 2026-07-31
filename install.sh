@@ -41,9 +41,29 @@ cp systemd/lector.service "$HOME/.config/systemd/user/lector.service"
 systemctl --user daemon-reload
 systemctl --user enable --now lector.service
 
-step "hyprland binds (sourced from userprefs.conf)"
-SOURCE_LINE="source = $REPO/hypr/lector-binds.conf"
-if [[ -f "$USERPREFS" ]] && ! grep -qF "lector-binds.conf" "$USERPREFS"; then
+step "ollama (local LLM for summarize/annotate/smart-read)"
+if command -v ollama >/dev/null; then
+    cp systemd/ollama.service "$HOME/.config/systemd/user/ollama.service"
+    systemctl --user daemon-reload
+    systemctl --user enable --now ollama.service
+    for i in {1..20}; do curl -sf http://127.0.0.1:11434/api/version >/dev/null && break; sleep 0.5; done
+    ollama list | grep -q "qwen3:4b-instruct" || ollama pull qwen3:4b-instruct
+    pacman -Q ollama-cuda >/dev/null 2>&1 || \
+        echo "WARN: only CPU ollama installed — 'sudo pacman -S ollama-cuda' for GPU speed"
+else
+    echo "WARN: ollama not installed (pacman -S ollama) — LLM modes will be unavailable"
+fi
+
+step "hyprland binds (copied to ~/.config/hypr, sourced from userprefs.conf)"
+# copy rather than source from the repo: the repo may live on a mount that
+# isn't up yet when Hyprland parses config at login
+HYPR_BINDS="${XDG_CONFIG_HOME:-$HOME/.config}/hypr/lector-binds.conf"
+cp hypr/lector-binds.conf "$HYPR_BINDS"
+SOURCE_LINE="source = $HYPR_BINDS"
+if [[ -f "$USERPREFS" ]] && grep -qE "source *=.*Repos/lector/hypr/lector-binds" "$USERPREFS"; then
+    sed -i "s|^source *=.*Repos/lector/hypr/lector-binds.conf|source = $HYPR_BINDS|" "$USERPREFS"
+    echo "migrated old repo-path source line"
+elif [[ -f "$USERPREFS" ]] && ! grep -qF "lector-binds.conf" "$USERPREFS"; then
     cp "$USERPREFS" "$USERPREFS.bak-lector"
     printf '\n# lector read-aloud daemon\n%s\n' "$SOURCE_LINE" >> "$USERPREFS"
     echo "appended source line (backup at $USERPREFS.bak-lector)"

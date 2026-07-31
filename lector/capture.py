@@ -26,9 +26,12 @@ def as_doc_path(text: str) -> Path | None:
         from urllib.parse import unquote, urlparse
 
         text = unquote(urlparse(text).path)
-    p = Path(text).expanduser()
-    if p.is_file() and p.suffix.lower() in DOC_SUFFIXES:
-        return p
+    try:
+        p = Path(text).expanduser()
+        if p.is_file() and p.suffix.lower() in DOC_SUFFIXES:
+            return p
+    except OSError:  # e.g. ENAMETOOLONG: a long sentence is not a path
+        pass
     return None
 
 
