@@ -10,9 +10,13 @@ Everything runs locally: TTS/STT on CPU (zero VRAM), the LLM brain on Ollama.
 
 ## Status
 
-- **P1 (current): read-aloud core.** Clipboard/selection/file/inbox → Kokoro → mpv,
-  with pause/resume/stop/next-section binds, long-doc handling, waybar state.
-- P2 summarize/annotate · P3 dictation · P4 ask-the-doc · P5 polish — planned.
+- **P1: read-aloud core** — shipped. Highlight/clipboard/file/inbox → Kokoro → mpv,
+  pause/stop/next-section binds, long-doc handling, waybar state.
+- **P2 (current): the brain** — summarize (`Super+Alt+R`, saved + read aloud),
+  annotate (`Super+Alt+A`, inline margin notes saved to the notes dir), and
+  smart-read (LLM rewrites technical text for listening) via local Ollama
+  (qwen3:4b); optional cloud lane via any OpenAI-compatible endpoint.
+- P3 dictation · P4 ask-the-doc · P5 polish — planned.
 
 ## Install (Arch + Hyprland/HyDE)
 
@@ -49,6 +53,10 @@ lectorctl read --text "hello there"     # literal text
 lectorctl read --source file            # fzf picker over your home dir (symlinks followed,
                                         #   gitignored included, hidden dirs skipped;
                                         #   [picker] section in config.toml to tune)
+lectorctl read --smart doc.md           # LLM-rewritten narration instead of verbatim
+lectorctl summarize report.pdf          # structured note -> ~/Notes/lector/notes/ + clipboard + read aloud
+lectorctl annotate --source selection   # inline margin notes, saved (not spoken)
+lectorctl summarize --cloud big.pdf     # this call uses the cloud LLM lane
 lectorctl pause | stop | next | keep
 lectorctl status                        # json — script-friendly
 lectorctl menu                          # fzf TUI in your terminal; floating kitty from a bind

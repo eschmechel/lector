@@ -26,6 +26,11 @@ class Config:
     picker_dirs: list[Path] = field(default_factory=lambda: [Path("~").expanduser()])
     picker_exclude: list[str] = field(default_factory=lambda: ["node_modules", "__pycache__"])
     picker_limit: int = 4000
+    llm_provider: str = "local"
+    llm_local_base_url: str = "http://127.0.0.1:11434"
+    llm_local_model: str = "qwen3:4b-instruct"
+    llm_cloud_base_url: str = ""
+    llm_cloud_model: str = ""
 
     @property
     def inbox_dir(self) -> Path:
@@ -54,6 +59,7 @@ def load() -> Config:
     read = raw.get("read", {})
     inbox = raw.get("inbox", {})
     picker = raw.get("picker", {})
+    llm = raw.get("llm", {})
     return Config(
         notes_dir=Path(paths.get("notes_dir", "~/Notes/lector")).expanduser(),
         models_dir=Path(paths.get("models_dir", "~/.local/share/lector/models")).expanduser(),
@@ -64,4 +70,9 @@ def load() -> Config:
         picker_dirs=[Path(d).expanduser() for d in picker.get("dirs", ["~"])],
         picker_exclude=list(picker.get("exclude", ["node_modules", "__pycache__"])),
         picker_limit=int(picker.get("limit", 4000)),
+        llm_provider=llm.get("provider", "local"),
+        llm_local_base_url=llm.get("local_base_url", "http://127.0.0.1:11434"),
+        llm_local_model=llm.get("local_model", "qwen3:4b-instruct"),
+        llm_cloud_base_url=llm.get("cloud_base_url", ""),
+        llm_cloud_model=llm.get("cloud_model", ""),
     )

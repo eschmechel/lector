@@ -12,8 +12,9 @@ from .ipc import request
 MENU = [
     ("Read highlighted/clipboard", "read"),
     ("Read file…", "pick"),
-    ("Summarize → read  (P2)", "summarize"),
-    ("Annotate  (P2)", "annotate"),
+    ("Smart read (rewritten for listening)", "smart"),
+    ("Summarize → read", "summarize"),
+    ("Annotate (inline notes, saved)", "annotate"),
     ("Pause / Resume", "pause"),
     ("Next section", "next"),
     ("Keep last audio", "keep"),
@@ -129,13 +130,20 @@ def run_menu() -> None:
         path = pick_file_tui()
         if path:
             send("read", source="file", path=path)
+    elif action == "smart":
+        send("read", smart=True)
     else:
         send(action)
 
 
 # ---------------------------------------------------------------- commands
 
-def run_read(ns) -> None:
+def run_input_command(cmd: str, ns) -> None:
+    extra = {}
+    if getattr(ns, "smart", False):
+        cmd, extra = "read", {"smart": True}
+    if getattr(ns, "cloud", False):
+        extra["cloud"] = True
     path = ns.path or ns.file
     if path == "-" or (path is None and ns.text is None
                        and ns.source == "auto" and not sys.stdin.isatty()):
@@ -143,23 +151,24 @@ def run_read(ns) -> None:
         if not text.strip():
             print("empty stdin", file=sys.stderr)
             sys.exit(1)
-        send("read", text=text)
+        send(cmd, text=text, **extra)
         return
     if ns.text is not None:
-        send("read", text=ns.text)
+        send(cmd, text=ns.text, **extra)
         return
     if path:
-        send("read", source="file", path=str(Path(path).expanduser().resolve()))
+        send(cmd, source="file", path=str(Path(path).expanduser().resolve()), **extra)
         return
     if ns.source == "file":
         if not in_tty():
-            spawn_floating("read", "--source", "file")
+            args = [cmd] if cmd != "read" or not extra.get("smart") else ["read", "--smart"]
+            spawn_floating(*args, "--source", "file")
             return
         picked = pick_file_tui()
         if picked:
-            send("read", source="file", path=picked)
+            send(cmd, source="file", path=picked, **extra)
         return
-    send("read", source=ns.source)
+    send(cmd, source=ns.source, **extra)
 
 
 def run_status(waybar: bool) -> None:
@@ -178,15 +187,27 @@ def main() -> None:
                "`lectorctl read --text 'hello'`, `lectorctl status` (json)")
     sub = parser.add_subparsers(dest="command")
 
-    p_read = sub.add_parser("read", help="read a document aloud")
-    p_read.add_argument("path", nargs="?", default=None,
-                        help="file to read, or '-' for stdin")
-    p_read.add_argument("--text", default=None, help="read this literal text")
-    p_read.add_argument("--source", choices=["auto", "clipboard", "selection", "file"],
-                        default="auto")
-    p_read.add_argument("--file", dest="file", default=None, help=argparse.SUPPRESS)
+    def add_input_args(p, smart_flag=False):
+        p.add_argument("path", nargs="?", default=None,
+                       help="file to process, or '-' for stdin")
+        p.add_argument("--text", default=None, help="process this literal text")
+        p.add_argument("--source", choices=["auto", "clipboard", "selection", "file"],
+                       default="auto")
+        p.add_argument("--cloud", action="store_true",
+                       help="use the cloud LLM lane for this call")
+        p.add_argument("--file", dest="file", default=None, help=argparse.SUPPRESS)
+        if smart_flag:
+            p.add_argument("--smart", action="store_true",
+                           help="LLM-rewrite for listening before reading")
 
-    for name in ("summarize", "annotate", "pause", "stop", "next", "keep", "menu", "help"):
+    p_read = sub.add_parser("read", help="read a document aloud")
+    add_input_args(p_read, smart_flag=True)
+    p_sum = sub.add_parser("summarize", help="LLM summary, saved + read aloud")
+    add_input_args(p_sum)
+    p_ann = sub.add_parser("annotate", help="LLM inline margin notes, saved")
+    add_input_args(p_ann)
+
+    for name in ("pause", "stop", "next", "keep", "menu", "help"):
         sub.add_parser(name)
 
     p_status = sub.add_parser("status")
@@ -206,8 +227,8 @@ def main() -> None:
         run_menu()
     elif ns.command == "status":
         run_status(ns.waybar)
-    elif ns.command == "read":
-        run_read(ns)
+    elif ns.command in ("read", "summarize", "annotate"):
+        run_input_command(ns.command, ns)
     else:
         send(ns.command)
 

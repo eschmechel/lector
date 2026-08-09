@@ -77,6 +77,31 @@ def uri_decoding():
         uri = f"file://{str(p).replace(' ', '%20')}"
         assert as_doc_path(uri) == p, "percent-encoded file URI must resolve"
         assert as_doc_path(f"file://{p}\r") == p, "CRLF from uri-list must be tolerated"
+    long_sentence = "a" * 300 + ".md"  # >255-char path component: OSError, not a crash
+    assert as_doc_path(long_sentence) is None
+
+
+def brain_offline():
+    from .brain import _PROMPTS, _WORD_CAPS, strip_thinking
+
+    assert set(_PROMPTS) == {"summarize", "annotate", "smart"} == set(_WORD_CAPS)
+    assert strip_thinking("<think>internal</think>real output") == "real output"
+    assert strip_thinking("<think>unterminated...") == ""
+
+
+def llm_roundtrip():
+    import httpx
+
+    from . import config
+    from .brain import Brain
+
+    cfg = config.load()
+    try:
+        httpx.get(f"{cfg.llm_local_base_url}/api/version", timeout=2)
+    except httpx.ConnectError:
+        return "skip"
+    out = Brain(cfg).complete("Answer with exactly one word.", "What is 2+2?")
+    assert out.strip(), "empty LLM reply"
 
 
 def tts_render():
@@ -100,6 +125,8 @@ def main() -> None:
     check("text chunker", chunker)
     check("speech normalizer", speech_normalizer)
     check("file-URI decoding", uri_decoding)
+    check("brain prompts/think-strip", brain_offline)
+    check("local LLM roundtrip", llm_roundtrip)
     check("kokoro TTS render", tts_render)
     total = len(PASS) + len(SKIP) + len(FAIL)
     print(f"selftest: {len(PASS)} passed, {len(SKIP)} skipped, {len(FAIL)} failed (of {total})")

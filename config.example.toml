@@ -16,6 +16,17 @@ long_doc_words = 1500
 # Watch <notes_dir>/inbox for dropped .md/.txt/.pdf files
 enabled = true
 
+[llm]
+# The brain for summarize / annotate / smart-read.
+provider = "local"                          # "local" (ollama) or "cloud" as the default lane
+local_base_url = "http://127.0.0.1:11434"
+local_model = "qwen3:4b-instruct"   # non-thinking instruct variant — thinking models leak reasoning into output
+# Cloud lane (any OpenAI-compatible endpoint — e.g. Aperture over the tailnet).
+# Set here or via env: LECTOR_CLOUD_BASE_URL / LECTOR_CLOUD_MODEL / LECTOR_CLOUD_API_KEY.
+# Per-call: `lectorctl summarize --cloud`.
+cloud_base_url = ""
+cloud_model = ""
+
 [picker]
 # File-picker search roots. Symlinks are followed; gitignored files are included;
 # hidden dot-directories are always skipped (this prunes .git/.venv/.cache for free).
