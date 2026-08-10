@@ -74,7 +74,10 @@ step "systemd user service"
 mkdir -p "$HOME/.config/systemd/user"
 cp systemd/lector.service "$HOME/.config/systemd/user/lector.service"
 systemctl --user daemon-reload
-systemctl --user enable --now lector.service
+systemctl --user enable lector.service >/dev/null
+# restart, not `enable --now`: on a re-install the unit is already active, so
+# --now is a no-op and the daemon keeps serving the code you just replaced.
+systemctl --user restart lector.service
 
 step "ollama (local LLM for summarize/annotate/smart-read)"
 if command -v ollama >/dev/null; then
