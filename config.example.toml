@@ -58,8 +58,12 @@ clean_by_default = false     # raw transcript unless --clean
 hold_mode = true             # press-and-hold; double-tap latches
 max_hold_s = 120.0           # backstop if a key-release event is ever missed
 latch_window_ms = 400        # double-tap window
-# Proper nouns and jargon the model should spell correctly. Corrections you teach it
-# with the correct bind are added to ~/.config/lector/learned.json automatically.
+# Proper nouns and jargon, passed to the LLM cleanup prompt so --clean spells them
+# right. This does NOT affect the raw transcript: fuzzy-matching vocabulary against
+# raw speech is unsafe (with "lector" listed, dictating "lecture" would be corrupted).
+# To fix the raw tier, say the word once, correct it, and press Super+Alt+C — the
+# exact substitution is then learned into ~/.config/lector/learned.json and applied
+# to every future transcript.
 vocabulary = ["Hyprland", "Forgejo", "Proxmox", "Tailscale", "kubectl"]
 
 [inject]

@@ -16,13 +16,15 @@ run() { # run <name> <cmd...>
 
 run "selftest (imports, ingest, chunker, TTS, STT)" uv run python -m lector.selftest
 
-if systemctl --user is-active --quiet lector.service; then
+# Probe the socket rather than systemd: a daemon run by hand (from a worktree, say)
+# is just as testable, and gating on the unit silently skipped these.
+if .venv/bin/lectorctl status >/dev/null 2>&1; then
     run "daemon status roundtrip" .venv/bin/lectorctl status
     # Idle stop is a no-op, but it proves the voice commands are wired end to end.
     run "dictation command roundtrip" .venv/bin/lectorctl dictate --stop
     run "runtime option roundtrip" .venv/bin/lectorctl set dictation_interrupt pause
 else
-    echo "note  lector.service not active — daemon roundtrips skipped"
+    echo "note  no lector daemon reachable — daemon roundtrips skipped"
 fi
 
 rm -f /tmp/lector-smoke-$$.log
