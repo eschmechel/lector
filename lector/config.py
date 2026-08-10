@@ -14,16 +14,11 @@ RENDER_DIR = CACHE_DIR / "render"
 
 DOC_SUFFIXES = {".md", ".txt", ".pdf"}
 
-# Terminals paste with ctrl+shift+v; almost everything else uses ctrl+v.
-DEFAULT_PASTE_CHORDS = {
-    "kitty": "ctrl+shift+v",
-    "foot": "ctrl+shift+v",
-    "com.mitchellh.ghostty": "ctrl+shift+v",
-    "org.wezfurlong.wezterm": "ctrl+shift+v",
-    "Alacritty": "ctrl+shift+v",
-    "org.kde.konsole": "ctrl+shift+v",
-    "xterm-256color": "ctrl+shift+v",
-}
+# Text is typed, not pasted. A synthesized ctrl+shift+v was measured inserting
+# nothing at all while still stranding both modifiers in the compositor — see the
+# module docstring in inject.py. Per-app overrides may name a chord instead, but
+# one with two or more modifiers is refused because that is what strands them.
+DEFAULT_INJECT_METHODS: dict[str, str] = {}
 
 # Scribe defaults to the cloud lane (D54): it is the quality- and latency-sensitive
 # tier, and the Aperture gateway is flat-rate. Everything else stays local.
@@ -66,11 +61,12 @@ class Config:
     dictation_interrupt: str = "pause"  # "pause" | "stop"
 
     # --- injection (P3) ---
-    inject_default_chord: str = "ctrl+v"
-    inject_chords: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_PASTE_CHORDS))
+    inject_default_chord: str = "type"
+    inject_chords: dict[str, str] = field(
+        default_factory=lambda: dict(DEFAULT_INJECT_METHODS))
     inject_restore_clipboard: bool = True
-    inject_fallback_type: bool = True
-    inject_type_delay_ms: int = 3
+    inject_copy_to_clipboard: bool = True
+    inject_type_delay_ms: int = 1
 
     # --- style (P3) ---
     style_card: Path = field(
@@ -123,7 +119,7 @@ def load() -> Config:
     inject = raw.get("inject", {})
     style = raw.get("style", {})
 
-    chords = dict(DEFAULT_PASTE_CHORDS)
+    chords = dict(DEFAULT_INJECT_METHODS)
     chords.update(inject.get("chords", {}))
     lanes = dict(DEFAULT_LANES)
     lanes.update(llm.get("lanes", {}))
@@ -159,11 +155,11 @@ def load() -> Config:
         max_hold_s=float(dictation.get("max_hold_s", 120.0)),
         latch_window_ms=int(dictation.get("latch_window_ms", 400)),
         dictation_interrupt=read.get("dictation_interrupt", "pause"),
-        inject_default_chord=inject.get("default_chord", "ctrl+v"),
+        inject_default_chord=inject.get("method", inject.get("default_chord", "type")),
         inject_chords=chords,
         inject_restore_clipboard=bool(inject.get("restore_clipboard", True)),
-        inject_fallback_type=bool(inject.get("fallback_type", True)),
-        inject_type_delay_ms=int(inject.get("type_delay_ms", 3)),
+        inject_copy_to_clipboard=bool(inject.get("copy_to_clipboard", True)),
+        inject_type_delay_ms=int(inject.get("type_delay_ms", 1)),
         style_card=Path(style.get("card", "~/.config/lector/style.md")).expanduser(),
         style_profiles=dict(style.get("profiles", {})),
         shortcuts=dict(raw.get("shortcuts", {})),
