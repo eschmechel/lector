@@ -112,6 +112,14 @@ lector watches PipeWire and rebinds when the default source moves, and if a capt
 still comes back as pure digital silence it rebinds and tells you to try again. Put your
 AirPods down and pick them up as often as you like.
 
+**Text is typed, not pasted.** Synthesizing a paste chord is the obvious optimization,
+and it does not work here: `ctrl+shift+v` through `wtype` was measured inserting nothing
+at all while still leaving both modifiers logically held — after which the next Escape
+read as `ctrl+shift+Escape` and launched the system monitor. Typing is exact, needs no
+modifiers, and costs about 9ms per character. You can opt an app back into pasting via
+`[inject.chords]`, but a chord with two or more modifiers is refused, because that is
+the combination that strands them.
+
 ## Smoke
 
 ```sh

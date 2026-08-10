@@ -102,17 +102,23 @@ def brain_offline():
     assert strip_thinking("<think>unterminated...") == ""
 
 
-def inject_chords():
-    from .inject import _chord_args, chord_for
+def inject_methods():
+    from .inject import _chord_args, chord_is_safe, method_for
 
     with tempfile.TemporaryDirectory() as td:
         cfg = _tmp_cfg(td)
-        assert chord_for("kitty", cfg) == "ctrl+shift+v"
-        assert chord_for("org.kde.kitty", cfg) == "ctrl+shift+v", "contains-match"
-        assert chord_for("firefox", cfg) == "ctrl+v"
-        assert chord_for("", cfg) == "ctrl+v"
-    assert _chord_args("ctrl+shift+v") == [
-        "-M", "ctrl", "-M", "shift", "-k", "v", "-m", "shift", "-m", "ctrl"]
+        assert method_for("kitty", cfg) == "type", "typing is the default everywhere"
+        assert method_for("", cfg) == "type"
+        cfg.inject_chords = {"firefox": "ctrl+v"}
+        assert method_for("firefox", cfg) == "ctrl+v"
+        assert method_for("org.mozilla.firefox", cfg) == "ctrl+v", "contains-match"
+        assert method_for("kitty", cfg) == "type", "unlisted apps keep the default"
+
+    # Measured: one -M modifier is released cleanly, two get stranded in the
+    # compositor and turn the user's next Escape into ctrl+shift+Escape.
+    assert chord_is_safe("ctrl+v")
+    assert chord_is_safe("v")
+    assert not chord_is_safe("ctrl+shift+v")
     assert _chord_args("ctrl+v") == ["-M", "ctrl", "-k", "v", "-m", "ctrl"]
 
 
@@ -373,7 +379,7 @@ def main() -> None:
     check("speech normalizer", speech_normalizer)
     check("file-URI decoding", uri_decoding)
     check("brain prompts/think-strip", brain_offline)
-    check("paste chord selection", inject_chords)
+    check("injection method selection", inject_methods)
     check("style card + shortcuts", style_book)
     check("correction learning", style_learning)
     check("dictation log + promote", dictation_log)

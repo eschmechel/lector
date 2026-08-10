@@ -1,15 +1,29 @@
 """Put text into whatever window has focus.
 
-Typing character-by-character with wtype is reliable but slow — at 3ms/char a
-200-word dictation spends ~3.6s typing itself out. So the default path puts the text
-on the clipboard and synthesizes a paste, which is instant regardless of length. The
-paste chord is per-app because terminals want ctrl+shift+v.
+Typing, not pasting. Synthesizing a paste chord looked faster on paper, but on this
+stack it is both broken and harmful:
+
+  * `wtype -M ctrl -M shift -k v -m shift -m ctrl` does not paste. Measured against
+    a terminal reading one line: the clipboard canary never arrived, while wtype
+    still exited 0 — so the daemon reported a successful "paste" and inserted
+    nothing.
+  * Worse, two `-M` modifiers get stranded. wtype's man page says modifiers are
+    released when the program terminates, but the release loses a race with the
+    virtual keyboard being destroyed, so Ctrl+Shift stay logically held. The next
+    Escape then reads as Ctrl+Shift+Escape, which on HyDE launches the system
+    monitor. One `-M` does not leak; two do.
+
+Typing has neither problem and was exact over 137 characters. It costs about
+9ms/character, which is what the user's previous dictation tool did anyway.
+A chord can still be configured per app for anyone whose stack handles it, but a
+chord with two or more modifiers is refused rather than silently stranding them.
 """
 
 import asyncio
 import json
 
 MOD_ALIASES = {"super": "logo", "meta": "logo", "control": "ctrl"}
+TYPE = "type"
 
 
 async def _run(*cmd: str, stdin: bytes | None = None) -> tuple[int, str]:
@@ -34,16 +48,15 @@ async def active_window() -> dict:
         return {}
 
 
-def chord_for(window_class: str, cfg) -> str:
-    """Exact class match first, then a case-insensitive contains match."""
-    if not window_class:
-        return cfg.inject_default_chord
-    if window_class in cfg.inject_chords:
-        return cfg.inject_chords[window_class]
-    low = window_class.lower()
-    for known, chord in cfg.inject_chords.items():
-        if known.lower() in low:
-            return chord
+def method_for(window_class: str, cfg) -> str:
+    """"type", or a chord like "ctrl+v", for the focused window."""
+    if window_class:
+        if window_class in cfg.inject_chords:
+            return cfg.inject_chords[window_class]
+        low = window_class.lower()
+        for known, method in cfg.inject_chords.items():
+            if known.lower() in low:
+                return method
     return cfg.inject_default_chord
 
 
@@ -62,6 +75,11 @@ def _chord_args(chord: str) -> list[str]:
     return args
 
 
+def chord_is_safe(chord: str) -> bool:
+    """Two or more modifiers get stranded by wtype; refuse those."""
+    return len([p for p in chord.split("+") if p.strip()]) <= 2
+
+
 async def get_clipboard() -> str | None:
     rc, out = await _run("wl-paste", "-n", "-t", "text")
     return out if rc == 0 else None
@@ -71,12 +89,27 @@ async def set_clipboard(text: str) -> None:
     await _run("wl-copy", stdin=text.encode())
 
 
-async def clear_clipboard() -> None:
-    await _run("wl-copy", "--clear")
-
-
 async def type_text(text: str, cfg) -> bool:
-    rc, _ = await _run("wtype", "-d", str(cfg.inject_type_delay_ms), "--", text)
+    # wtype rejects -d 0; 1ms is the floor and the per-keystroke cost dominates.
+    delay = max(1, cfg.inject_type_delay_ms)
+    rc, _ = await _run("wtype", "-d", str(delay), "--", text)
+    return rc == 0
+
+
+async def paste_text(text: str, chord: str, cfg) -> bool:
+    previous = await get_clipboard() if cfg.inject_restore_clipboard else None
+    await set_clipboard(text)
+    # wl-copy forks a server to own the selection; let the compositor publish the
+    # new offer before telling the target to paste.
+    await asyncio.sleep(0.06)
+    args = _chord_args(chord)
+    if not args:
+        return False
+    rc, _ = await _run("wtype", *args)
+    if rc == 0 and cfg.inject_restore_clipboard:
+        await asyncio.sleep(0.15)
+        if previous:
+            await set_clipboard(previous)
     return rc == 0
 
 
@@ -86,29 +119,20 @@ async def insert(text: str, cfg) -> str:
         return "noop"
 
     win = await active_window()
-    chord = chord_for(win.get("class", ""), cfg)
+    method = method_for(win.get("class", ""), cfg)
 
-    previous = await get_clipboard() if cfg.inject_restore_clipboard else None
-    await set_clipboard(text)
-    # wl-copy forks a server to own the selection; give the compositor a moment to
-    # publish the new offer before the target app is told to paste.
-    await asyncio.sleep(0.06)
+    if method != TYPE and not chord_is_safe(method):
+        print(f"inject: refusing chord {method!r} — two or more modifiers strand "
+              "themselves in the compositor; typing instead", flush=True)
+        method = TYPE
 
-    args = _chord_args(chord)
-    rc, _ = await _run("wtype", *args) if args else (1, "")
+    # Keep the text on the clipboard regardless: if injection lands in the wrong
+    # window or not at all, it is still recoverable with a normal paste.
+    if cfg.inject_copy_to_clipboard and method == TYPE:
+        await set_clipboard(text)
 
-    if rc != 0:
-        if cfg.inject_fallback_type and await type_text(text, cfg):
-            if previous is not None:
-                await set_clipboard(previous)
-            return "type"
-        return "failed"
-
-    if cfg.inject_restore_clipboard:
-        # Let the paste land before taking the clipboard back.
-        await asyncio.sleep(0.15)
-        if previous:
-            await set_clipboard(previous)
-        elif previous == "":
-            await clear_clipboard()
-    return "paste"
+    if method == TYPE:
+        return "type" if await type_text(text, cfg) else "failed"
+    if await paste_text(text, method, cfg):
+        return "paste"
+    return "type" if await type_text(text, cfg) else "failed"
