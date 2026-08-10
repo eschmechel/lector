@@ -14,6 +14,21 @@ RENDER_DIR = CACHE_DIR / "render"
 
 DOC_SUFFIXES = {".md", ".txt", ".pdf"}
 
+# Terminals paste with ctrl+shift+v; almost everything else uses ctrl+v.
+DEFAULT_PASTE_CHORDS = {
+    "kitty": "ctrl+shift+v",
+    "foot": "ctrl+shift+v",
+    "com.mitchellh.ghostty": "ctrl+shift+v",
+    "org.wezfurlong.wezterm": "ctrl+shift+v",
+    "Alacritty": "ctrl+shift+v",
+    "org.kde.konsole": "ctrl+shift+v",
+    "xterm-256color": "ctrl+shift+v",
+}
+
+# Scribe defaults to the cloud lane (D54): it is the quality- and latency-sensitive
+# tier, and the Aperture gateway is flat-rate. Everything else stays local.
+DEFAULT_LANES = {"scribe": "cloud", "scribe_rewrite": "cloud"}
+
 
 @dataclass
 class Config:
@@ -31,6 +46,38 @@ class Config:
     llm_local_model: str = "qwen3:4b-instruct"
     llm_cloud_base_url: str = ""
     llm_cloud_model: str = ""
+    llm_lanes: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_LANES))
+    llm_cloud_fallback_local: bool = True
+
+    # --- dictation (P3) ---
+    mic_device: str = "pipewire"
+    mic_sample_rate: int = 16000
+    mic_block_ms: int = 100
+    mic_warmup_ms: int = 300
+    warn_bluetooth: bool = True
+    stt_model: str = "nemo-parakeet-tdt-0.6b-v2"
+    stt_quantization: str = "int8"
+    stt_threads: int = 8
+    stt_max_segment_s: float = 24.0
+    clean_by_default: bool = False
+    hold_mode: bool = True
+    max_hold_s: float = 120.0
+    latch_window_ms: int = 400
+    dictation_interrupt: str = "pause"  # "pause" | "stop"
+
+    # --- injection (P3) ---
+    inject_default_chord: str = "ctrl+v"
+    inject_chords: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_PASTE_CHORDS))
+    inject_restore_clipboard: bool = True
+    inject_fallback_type: bool = True
+    inject_type_delay_ms: int = 3
+
+    # --- style (P3) ---
+    style_card: Path = field(
+        default_factory=lambda: Path("~/.config/lector/style.md").expanduser())
+    style_profiles: dict[str, str] = field(default_factory=dict)
+    shortcuts: dict[str, str] = field(default_factory=dict)
+    vocabulary: list[str] = field(default_factory=list)
 
     @property
     def inbox_dir(self) -> Path:
@@ -44,9 +91,21 @@ class Config:
     def notes_out_dir(self) -> Path:
         return self.notes_dir / "notes"
 
+    @property
+    def dictation_dir(self) -> Path:
+        return self.notes_dir / "dictation"
+
+    @property
+    def mic_blocksize(self) -> int:
+        return int(self.mic_sample_rate * self.mic_block_ms / 1000)
+
+    def lane_for(self, mode: str) -> str:
+        """Which LLM lane a mode runs on. Explicit per-mode wins, else the default."""
+        return self.llm_lanes.get(mode, self.llm_provider)
+
     def ensure_dirs(self) -> None:
         for d in (self.notes_dir, self.inbox_dir, self.audio_dir, self.notes_out_dir,
-                  RUNTIME_DIR, RENDER_DIR):
+                  self.dictation_dir, RUNTIME_DIR, RENDER_DIR):
             d.mkdir(parents=True, exist_ok=True)
 
 
@@ -60,6 +119,15 @@ def load() -> Config:
     inbox = raw.get("inbox", {})
     picker = raw.get("picker", {})
     llm = raw.get("llm", {})
+    dictation = raw.get("dictation", {})
+    inject = raw.get("inject", {})
+    style = raw.get("style", {})
+
+    chords = dict(DEFAULT_PASTE_CHORDS)
+    chords.update(inject.get("chords", {}))
+    lanes = dict(DEFAULT_LANES)
+    lanes.update(llm.get("lanes", {}))
+
     return Config(
         notes_dir=Path(paths.get("notes_dir", "~/Notes/lector")).expanduser(),
         models_dir=Path(paths.get("models_dir", "~/.local/share/lector/models")).expanduser(),
@@ -75,4 +143,29 @@ def load() -> Config:
         llm_local_model=llm.get("local_model", "qwen3:4b-instruct"),
         llm_cloud_base_url=llm.get("cloud_base_url", ""),
         llm_cloud_model=llm.get("cloud_model", ""),
+        llm_lanes=lanes,
+        llm_cloud_fallback_local=bool(llm.get("cloud_fallback_local", True)),
+        mic_device=dictation.get("device", "pipewire"),
+        mic_sample_rate=int(dictation.get("sample_rate", 16000)),
+        mic_block_ms=int(dictation.get("block_ms", 100)),
+        mic_warmup_ms=int(dictation.get("warmup_ms", 300)),
+        warn_bluetooth=bool(dictation.get("warn_bluetooth", True)),
+        stt_model=dictation.get("model", "nemo-parakeet-tdt-0.6b-v2"),
+        stt_quantization=dictation.get("quantization", "int8"),
+        stt_threads=int(dictation.get("threads", 8)),
+        stt_max_segment_s=float(dictation.get("max_segment_s", 24.0)),
+        clean_by_default=bool(dictation.get("clean_by_default", False)),
+        hold_mode=bool(dictation.get("hold_mode", True)),
+        max_hold_s=float(dictation.get("max_hold_s", 120.0)),
+        latch_window_ms=int(dictation.get("latch_window_ms", 400)),
+        dictation_interrupt=read.get("dictation_interrupt", "pause"),
+        inject_default_chord=inject.get("default_chord", "ctrl+v"),
+        inject_chords=chords,
+        inject_restore_clipboard=bool(inject.get("restore_clipboard", True)),
+        inject_fallback_type=bool(inject.get("fallback_type", True)),
+        inject_type_delay_ms=int(inject.get("type_delay_ms", 3)),
+        style_card=Path(style.get("card", "~/.config/lector/style.md")).expanduser(),
+        style_profiles=dict(style.get("profiles", {})),
+        shortcuts=dict(raw.get("shortcuts", {})),
+        vocabulary=list(dictation.get("vocabulary", [])),
     )

@@ -9,23 +9,90 @@ voice = "af_heart"   # any Kokoro voice id (af_heart, af_sarah, am_michael, bf_e
 speed = 1.0
 
 [read]
-# Above this word count, a notification asks: read all / section by section / cancel
+# Above this word count, the fzf chooser asks: read all / section by section /
+# summarize / cancel.
 long_doc_words = 1500
+# What happens to playback when you start dictating: "pause" resumes afterwards,
+# "stop" ends the read. Toggle at runtime from the menu or `lectorctl set`.
+dictation_interrupt = "pause"
 
 [inbox]
 # Watch <notes_dir>/inbox for dropped .md/.txt/.pdf files
 enabled = true
 
 [llm]
-# The brain for summarize / annotate / smart-read.
-provider = "local"                          # "local" (ollama) or "cloud" as the default lane
+# The brain for cleanup / scribe / summarize / annotate / smart-read.
+provider = "local"                          # default lane for modes not listed below
 local_base_url = "http://127.0.0.1:11434"
 local_model = "qwen3:4b-instruct"   # non-thinking instruct variant — thinking models leak reasoning into output
-# Cloud lane (any OpenAI-compatible endpoint — e.g. Aperture over the tailnet).
-# Set here or via env: LECTOR_CLOUD_BASE_URL / LECTOR_CLOUD_MODEL / LECTOR_CLOUD_API_KEY.
-# Per-call: `lectorctl summarize --cloud`.
-cloud_base_url = ""
-cloud_model = ""
+# Cloud lane: any OpenAI-compatible endpoint (e.g. an AI gateway on your own tailnet).
+# Leave blank to stay fully local. If your gateway authorizes by network identity no
+# key is needed; otherwise set LECTOR_CLOUD_API_KEY. Override per call with `--cloud`.
+# Env vars LECTOR_CLOUD_BASE_URL / _MODEL / _API_KEY take precedence over these.
+cloud_base_url = ""     # e.g. "http://gateway.example.ts.net/v1"
+cloud_model = ""        # e.g. "deepseek-v4-flash"
+# If the cloud lane fails (tailnet down), retry locally instead of erroring.
+cloud_fallback_local = true
+
+[llm.lanes]
+# Per-mode routing. Scribe is the quality- and latency-sensitive tier and the gateway
+# is flat-rate, so it goes out by default; everything else stays on the local model.
+scribe = "cloud"
+scribe_rewrite = "cloud"
+clean = "local"
+summarize = "local"
+annotate = "local"
+smart = "local"
+
+[dictation]
+device = "pipewire"          # PortAudio device name; "" follows the PortAudio default
+sample_rate = 16000
+block_ms = 100
+warmup_ms = 300              # discard after opening: a suspended node returns silence
+warn_bluetooth = true        # HFP mode wrecks both capture and simultaneous playback
+model = "nemo-parakeet-tdt-0.6b-v2"   # v3 is multilingual, slightly worse on English
+quantization = "int8"        # ~671MB; "" for fp32 (~2.5GB)
+threads = 8                  # keep ORT on the P-cores; more is not faster
+max_segment_s = 24.0         # above this, segment with Silero VAD (ONNX export limit)
+clean_by_default = false     # raw transcript unless --clean
+hold_mode = true             # press-and-hold; double-tap latches
+max_hold_s = 120.0           # backstop if a key-release event is ever missed
+latch_window_ms = 400        # double-tap window
+# Proper nouns and jargon, passed to the LLM cleanup prompt so --clean spells them
+# right. This does NOT affect the raw transcript: fuzzy-matching vocabulary against
+# raw speech is unsafe (with "lector" listed, dictating "lecture" would be corrupted).
+# To fix the raw tier, say the word once, correct it, and press Super+Alt+C — the
+# exact substitution is then learned into ~/.config/lector/learned.json and applied
+# to every future transcript.
+vocabulary = ["Hyprland", "Forgejo", "Proxmox", "Tailscale", "kubectl"]
+
+[inject]
+default_chord = "ctrl+v"
+restore_clipboard = true     # note: a clipboard manager may still log the text
+fallback_type = true         # fall back to wtype if the paste chord fails
+type_delay_ms = 3
+
+[inject.chords]
+# Per-app paste chord, matched on the Hyprland window class.
+kitty = "ctrl+shift+v"
+foot = "ctrl+shift+v"
+"com.mitchellh.ghostty" = "ctrl+shift+v"
+"org.wezfurlong.wezterm" = "ctrl+shift+v"
+
+[style]
+# Free-form markdown describing how you write. Injected into cleanup and scribe
+# prompts. Create it and lector picks it up on the next daemon restart.
+card = "~/.config/lector/style.md"
+
+[style.profiles]
+# Tone per application, matched on window class.
+kitty = "Terse. No greeting or sign-off. Command-line register."
+discord = "Casual. Contractions fine, lowercase fine, no corporate padding."
+firefox = "Clear structured prose with paragraph breaks."
+
+[shortcuts]
+# Say the phrase, get the expansion. Matched case-insensitively, longest first.
+"my calendar link" = "https://cal.example.com/you"
 
 [picker]
 # File-picker search roots. Symlinks are followed; gitignored files are included;

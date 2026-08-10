@@ -10,6 +10,10 @@ from . import config as C
 from .ipc import request
 
 MENU = [
+    ("Dictate (start / stop)", "dictate"),
+    ("Dictate + clean up (LLM)", "dictate-clean"),
+    ("Scribe (rewrite selection, or write from intent)", "scribe"),
+    ("Correct last insertion (teach lector)", "correct"),
     ("Read highlighted/clipboard", "read"),
     ("Read file…", "pick"),
     ("Smart read (rewritten for listening)", "smart"),
@@ -17,7 +21,8 @@ MENU = [
     ("Annotate (inline notes, saved)", "annotate"),
     ("Pause / Resume", "pause"),
     ("Next section", "next"),
-    ("Keep last audio", "keep"),
+    ("Keep last (audio, or promote dictation)", "keep"),
+    ("Toggle playback-during-dictation (pause ⇄ stop)", "interrupt"),
     ("Stop", "stop"),
 ]
 
@@ -132,6 +137,15 @@ def run_menu() -> None:
             send("read", source="file", path=path)
     elif action == "smart":
         send("read", smart=True)
+    elif action == "dictate":
+        send("dictate", action="toggle")
+    elif action == "dictate-clean":
+        send("dictate", action="toggle", clean=True)
+    elif action == "scribe":
+        send("scribe", action="toggle")
+    elif action == "interrupt":
+        resp = send("set", key="dictation_interrupt", value="toggle")
+        print(f"playback during dictation: {resp.get('dictation_interrupt')}")
     else:
         send(action)
 
@@ -184,7 +198,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         prog="lectorctl", description="Control the lector daemon",
         epilog="scripting: `lectorctl read doc.pdf`, `cat notes.md | lectorctl read -`, "
-               "`lectorctl read --text 'hello'`, `lectorctl status` (json)")
+               "`lectorctl read --text 'hello'`, `lectorctl dictate --toggle`, "
+               "`lectorctl dictate --clean --note`, `lectorctl status` (json)")
     sub = parser.add_subparsers(dest="command")
 
     def add_input_args(p, smart_flag=False):
@@ -206,6 +221,35 @@ def main() -> None:
     add_input_args(p_sum)
     p_ann = sub.add_parser("annotate", help="LLM inline margin notes, saved")
     add_input_args(p_ann)
+
+    def add_voice_args(p):
+        g = p.add_mutually_exclusive_group()
+        g.add_argument("--start", action="store_const", dest="action", const="start",
+                       help="key pressed — begin listening")
+        g.add_argument("--stop", action="store_const", dest="action", const="stop",
+                       help="key released — finish and insert")
+        g.add_argument("--toggle", action="store_const", dest="action", const="toggle",
+                       help="latch on/off (default, and what the menu uses)")
+        p.set_defaults(action="toggle")
+        p.add_argument("--cloud", action="store_true",
+                       help="force the cloud LLM lane for this call")
+
+    p_dict = sub.add_parser("dictate", help="hold-to-talk dictation")
+    add_voice_args(p_dict)
+    p_dict.add_argument("--clean", action="store_true",
+                        help="LLM cleanup pass (filler removal, punctuation, formatting)")
+    p_dict.add_argument("--note", action="store_true",
+                        help="also save this one as its own note")
+
+    p_scribe = sub.add_parser(
+        "scribe", help="speak intent → prose, or rewrite the selection by voice")
+    add_voice_args(p_scribe)
+
+    sub.add_parser("correct", help="learn from your fix to the last insertion")
+
+    p_set = sub.add_parser("set", help="change a runtime option")
+    p_set.add_argument("key", help="e.g. dictation_interrupt")
+    p_set.add_argument("value", help="pause | stop | toggle")
 
     for name in ("pause", "stop", "next", "keep", "menu", "help"):
         sub.add_parser(name)
@@ -229,6 +273,12 @@ def main() -> None:
         run_status(ns.waybar)
     elif ns.command in ("read", "summarize", "annotate"):
         run_input_command(ns.command, ns)
+    elif ns.command == "dictate":
+        send("dictate", action=ns.action, clean=ns.clean, note=ns.note, cloud=ns.cloud)
+    elif ns.command == "scribe":
+        send("scribe", action=ns.action, cloud=ns.cloud)
+    elif ns.command == "set":
+        print(json.dumps(send("set", key=ns.key, value=ns.value), indent=2))
     else:
         send(ns.command)
 

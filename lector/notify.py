@@ -15,6 +15,27 @@ async def notify(summary: str, body: str = "", urgency: str = "normal",
     await proc.wait()
 
 
+MIC_NOTIFY_ID = 9911
+
+
+async def progress(summary: str, body: str, value: int,
+                   replace_id: int = MIC_NOTIFY_ID) -> None:
+    """A notification that replaces itself, with dunst's progress bar as a level
+    meter. Cheaper and less intrusive than an always-on-top overlay window."""
+    proc = await asyncio.create_subprocess_exec(
+        "dunstify", "-a", APP, "-r", str(replace_id), "-t", "1500",
+        "-h", f"int:value:{max(0, min(100, value))}", summary, body,
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+    await proc.wait()
+
+
+async def close(replace_id: int = MIC_NOTIFY_ID) -> None:
+    proc = await asyncio.create_subprocess_exec(
+        "dunstify", "-C", str(replace_id),
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+    await proc.wait()
+
+
 async def ask(summary: str, body: str, actions: list[tuple[str, str]],
               timeout_ms: int = 60000) -> str | None:
     """Actionable dunst notification (actions fire on middle-click in most configs).

@@ -5,18 +5,29 @@ import re
 import shutil
 import signal
 import sys
+import time
 import uuid
 from pathlib import Path
 
 from . import config as C
-from .brain import Brain, BrainUnavailable
-from .capture import resolve_source
+from . import dictation, notify as N
+from .audio_in import AudioUnavailable, MicStream, bluetooth_default
+from .brain import (
+    CLEAN_SYSTEM, SCRIBE_REWRITE_SYSTEM, SCRIBE_WRITE_SYSTEM,
+    Brain, BrainUnavailable,
+)
+from .capture import resolve_source, selection
 from .ingest import Doc, load_source
+from .inject import active_window, insert
 from .ipc import serve
 from .notify import ask, notify
 from .playback import Player
 from .state import StateFile
+from .stt import SttUnavailable, build as build_stt
+from .style import StyleBook
 from .tts_kokoro import KokoroTTS, ModelsMissing, chunk_text
+
+MIN_UTTERANCE_S = 0.35
 
 
 def slugify(title: str) -> str:
@@ -30,6 +41,10 @@ class Daemon:
         self.state = StateFile(C.STATE_FILE)
         self.tts = KokoroTTS(cfg.models_dir, cfg.voice, cfg.speed)
         self.brain = Brain(cfg)
+        self.style = StyleBook(cfg)
+        self.stt = build_stt(cfg)
+        self.mic = MicStream(cfg.mic_device, cfg.mic_sample_rate,
+                             cfg.mic_blocksize, cfg.mic_warmup_ms)
         self.player: Player | None = None
         self.session: asyncio.Task | None = None
         self.current_doc: Doc | None = None
@@ -38,7 +53,21 @@ class Daemon:
         self._skip = False
         self._stopping = False
         self._answers: dict[str, asyncio.Future] = {}
-        self._fg_task: asyncio.Task | None = None  # in-flight read/brain pipeline
+        self._fg_task: asyncio.Task | None = None
+
+        # dictation state
+        self._cap: dict | None = None          # active capture, if any
+        self._latched = False
+        self._pending: asyncio.Task | None = None   # deferred finalize (tap window)
+        self._indicator: asyncio.Task | None = None
+        self._watchdog: asyncio.Task | None = None
+        self._finalizing = False
+        self._paused_by_dictation = False
+        self._last_insertion = ""
+        self._last_dictation: dict | None = None
+        self._last_action = "read"
+        self._interrupt = cfg.dictation_interrupt
+        self._bt_warned = False
 
     # ------------------------------------------------------------- dispatch
 
@@ -58,26 +87,45 @@ class Daemon:
                 cmd, req.get("source", "auto"), req.get("path"),
                 req.get("text"), bool(req.get("cloud"))))
             return {"ok": True, "queued": True}
+        if cmd in ("dictate", "scribe"):
+            return await self.dictate_command(cmd, req)
+        if cmd == "correct":
+            asyncio.ensure_future(self.correct())
+            return {"ok": True, "queued": True}
         if cmd == "pause":
             return await self.pause()
         if cmd == "stop":
+            await self.cancel_capture()
             await self.stop_session()
             return {"ok": True}
         if cmd == "next":
             return await self.next_section()
         if cmd == "keep":
             return await self.keep()
+        if cmd == "set":
+            return self.set_option(req.get("key", ""), req.get("value", ""))
         if cmd == "status":
-            return {"ok": True, **self.state.get()}
+            return {"ok": True, **self.state.get(),
+                    "dictation_interrupt": self._interrupt,
+                    "listening": self._cap is not None, "latched": self._latched}
         if cmd == "answer":
             fut = self._answers.pop(req.get("id", ""), None)
             if fut and not fut.done():
                 fut.set_result(req.get("choice") or None)
             return {"ok": True}
-        if cmd in ("ask", "dictate"):
-            await notify("Not yet", f"'{cmd}' arrives in a later phase (P3/P4).")
+        if cmd == "ask":
+            await notify("Not yet", "'ask' arrives in P4.")
             return {"ok": True, "pending_phase": True}
         return {"ok": False, "error": f"unknown command: {cmd}"}
+
+    def set_option(self, key: str, value: str) -> dict:
+        if key == "dictation_interrupt" and value in ("pause", "stop"):
+            self._interrupt = value
+            return {"ok": True, key: value}
+        if key == "dictation_interrupt" and value == "toggle":
+            self._interrupt = "stop" if self._interrupt == "pause" else "pause"
+            return {"ok": True, key: self._interrupt}
+        return {"ok": False, "error": f"cannot set {key!r} to {value!r}"}
 
     # ------------------------------------------------------------- ui ask
 
@@ -104,6 +152,274 @@ class Daemon:
         finally:
             self._answers.pop(aid, None)
 
+    # ------------------------------------------------------------- dictation
+
+    async def dictate_command(self, cmd: str, req: dict) -> dict:
+        action = req.get("action", "toggle")
+        purpose = "scribe" if cmd == "scribe" else "dictate"
+        if action == "start":
+            return await self.press(purpose, req)
+        if action == "stop":
+            return await self.release()
+        # toggle: used when hold_mode is off, or from the menu
+        if self._cap is not None:
+            return await self.finish_capture()
+        return await self.press(purpose, req, latched=True)
+
+    async def press(self, purpose: str, req: dict, latched: bool = False) -> dict:
+        # A press during the tap window means double-tap: latch instead of finalizing.
+        if self._pending is not None and not self._pending.done():
+            self._pending.cancel()
+            self._pending = None
+            self._latched = True
+            await notify("Dictation latched", "Press again to finish.", timeout_ms=2000)
+            return {"ok": True, "latched": True}
+        if self._latched and self._cap is not None:
+            return await self.finish_capture()
+        if self._cap is not None:
+            return {"ok": True, "noop": "already listening"}
+        return await self.begin_capture(purpose, req, latched)
+
+    async def release(self) -> dict:
+        if self._cap is None or self._latched:
+            return {"ok": True, "noop": True}
+        held = self.mic.peek_seconds()
+        if held >= self.cfg.latch_window_ms / 1000.0:
+            return await self.finish_capture()   # a real hold: no added latency
+        # A tap. Wait briefly to see if a second one arrives (double-tap = latch).
+        self._pending = asyncio.ensure_future(self._deferred_finish())
+        return {"ok": True, "deferred": True}
+
+    async def _deferred_finish(self) -> None:
+        try:
+            await asyncio.sleep(self.cfg.latch_window_ms / 1000.0)
+        except asyncio.CancelledError:
+            return
+        self._pending = None
+        await self.finish_capture()
+
+    async def begin_capture(self, purpose: str, req: dict, latched: bool) -> dict:
+        if self.cfg.warn_bluetooth and not self._bt_warned:
+            bt = await asyncio.to_thread(bluetooth_default)
+            if bt:
+                self._bt_warned = True
+                await notify("Bluetooth mic in use",
+                             f"{bt} — HFP mode degrades capture and playback. "
+                             "Switch source for better accuracy.", timeout_ms=6000)
+        try:
+            await asyncio.to_thread(self.mic.start_collect)
+        except AudioUnavailable as e:
+            print(f"dictation failed: {e}", flush=True)
+            await notify("lector: microphone unavailable", str(e), urgency="critical")
+            return {"ok": False, "error": str(e)}
+
+        sel = ""
+        if purpose == "scribe":
+            value = await selection()
+            sel = value if isinstance(value, str) else ""
+        win = await active_window()
+
+        self._latched = latched
+        self._cap = {"purpose": purpose, "started": time.monotonic(),
+                     "clean": bool(req.get("clean", self.cfg.clean_by_default)),
+                     "note": bool(req.get("note")),
+                     "cloud": bool(req.get("cloud")),
+                     "selection": sel, "app": win.get("class", "")}
+        await self._interrupt_playback()
+        self.state.set(state="listening")
+        self._indicator = asyncio.ensure_future(self._indicator_loop())
+        self._watchdog = asyncio.ensure_future(self._watchdog_loop())
+        return {"ok": True, "listening": True}
+
+    async def cancel_capture(self) -> None:
+        if self._cap is None:
+            return
+        self._stop_helpers()
+        await asyncio.to_thread(self.mic.stop_collect)
+        self._cap = None
+        self._latched = False
+        await N.close()
+        await self._resume_playback()
+        self.state.set(state="idle")
+
+    def _stop_helpers(self) -> None:
+        for task in (self._indicator, self._watchdog, self._pending):
+            if task is not None and not task.done():
+                task.cancel()
+        self._indicator = self._watchdog = self._pending = None
+
+    async def _indicator_loop(self) -> None:
+        try:
+            while self._cap is not None:
+                label = "Listening — latched" if self._latched else "Listening"
+                secs = self.mic.peek_seconds()
+                await N.progress(label, f"{secs:.0f}s", int(self.mic.level * 100))
+                await asyncio.sleep(0.15)
+        except asyncio.CancelledError:
+            raise
+
+    async def _watchdog_loop(self) -> None:
+        """Backstop for a missed key-release event — without it, a dropped `bindr`
+        would leave the mic collecting forever.
+
+        A latched session has no release to miss, and latching exists precisely for
+        long dictation, so it only stops at a much larger hard cap.
+        """
+        hard_cap = max(self.cfg.max_hold_s * 10, 1800.0)
+        waited = 0.0
+        try:
+            while self._cap is not None:
+                await asyncio.sleep(self.cfg.max_hold_s)
+                waited += self.cfg.max_hold_s
+                if self._cap is None:
+                    return
+                if not self._latched:
+                    print(f"dictation watchdog fired after {waited:.0f}s "
+                          "(no key release seen)", flush=True)
+                    await self.finish_capture()
+                    return
+                if waited >= hard_cap:
+                    print(f"latched dictation hit the {hard_cap:.0f}s cap", flush=True)
+                    await notify("Dictation stopped", "Reached the maximum length.",
+                                 timeout_ms=4000)
+                    await self.finish_capture()
+                    return
+        except asyncio.CancelledError:
+            return
+
+    async def finish_capture(self) -> dict:
+        if self._cap is None or self._finalizing:
+            return {"ok": True, "noop": True}
+        self._finalizing = True
+        cap, self._cap = self._cap, None
+        self._latched = False
+        self._stop_helpers()
+        try:
+            audio = await asyncio.to_thread(self.mic.stop_collect)
+            await N.close()
+            secs = audio.size / self.cfg.mic_sample_rate if audio.size else 0.0
+            if secs < MIN_UTTERANCE_S:
+                await self._resume_playback()
+                await notify("Nothing heard", "Hold the key while speaking.",
+                             timeout_ms=2500)
+                self.state.set(state="idle")
+                return {"ok": True, "empty": True}
+
+            self.state.set(state="processing")
+            text = await asyncio.to_thread(
+                self.stt.transcribe, audio, self.cfg.mic_sample_rate)
+            text = (text or "").strip()
+            if not text:
+                await self._resume_playback()
+                await notify("Nothing recognized", f"{secs:.1f}s of audio",
+                             timeout_ms=2500)
+                self.state.set(state="idle")
+                return {"ok": True, "empty": True}
+
+            text = self.style.apply_corrections(text)
+            result = await self._post_process(cap, text)
+            if result is None:
+                self.state.set(state="idle")
+                return {"ok": True, "cancelled": True}
+
+            result = self.style.expand_shortcuts(result)
+            method = await insert(result, self.cfg)
+            self._last_insertion = result
+            self._last_dictation = {"text": result, "mode": cap["purpose"],
+                                    "app": cap["app"]}
+            self._last_action = "dictate"
+
+            log = await asyncio.to_thread(
+                dictation.append_entry, self.cfg, result, cap["purpose"], cap["app"])
+            promoted = None
+            if cap["note"]:
+                promoted = await asyncio.to_thread(
+                    dictation.promote, self.cfg, result, cap["purpose"], cap["app"])
+            print(f"{cap['purpose']}: {secs:.1f}s -> {len(result.split())} words "
+                  f"({method}, lane={self.brain.last_lane})", flush=True)
+            if method == "failed":
+                await notify("Insertion failed", "Text is on the clipboard.",
+                             urgency="critical")
+            elif promoted:
+                await notify("Dictation saved as a note", str(promoted), timeout_ms=4000)
+            return {"ok": True, "words": len(result.split()), "method": method,
+                    "log": str(log)}
+        except (SttUnavailable, BrainUnavailable) as e:
+            print(f"dictation failed: {e}", flush=True)
+            await notify("lector: dictation unavailable", str(e), urgency="critical")
+            return {"ok": False, "error": str(e)}
+        except Exception as e:  # noqa: BLE001
+            print(f"dictation failed: {type(e).__name__}: {e}", flush=True)
+            await notify("lector error", str(e), urgency="critical")
+            return {"ok": False, "error": str(e)}
+        finally:
+            self._finalizing = False
+            await self._resume_playback()
+            if self.state.get().get("state") in ("listening", "processing"):
+                self.state.set(state="idle")
+
+    async def _post_process(self, cap: dict, text: str) -> str | None:
+        """Raw transcript -> what actually gets inserted."""
+        purpose, cloud = cap["purpose"], cap["cloud"]
+        if purpose == "scribe":
+            rewriting = bool(cap["selection"])
+            mode = "scribe_rewrite" if rewriting else "scribe"
+            base = SCRIBE_REWRITE_SYSTEM if rewriting else SCRIBE_WRITE_SYSTEM
+            system = self.style.system_prompt(base, cap["app"])
+            return await asyncio.to_thread(
+                self.brain.run_voice, mode, cap["selection"] or text,
+                text if rewriting else "", cloud, system)
+        if cap["clean"]:
+            system = self.style.system_prompt(CLEAN_SYSTEM, cap["app"])
+            return await asyncio.to_thread(
+                self.brain.run_voice, "clean", text, "", cloud, system)
+        return text
+
+    async def correct(self) -> None:
+        """Learn from a fix: select the corrected text, then hit the bind (D51)."""
+        if not self._last_insertion:
+            await notify("Nothing to correct", "No recent insertion to compare against.")
+            return
+        value = await selection()
+        after = value if isinstance(value, str) else ""
+        if not after.strip():
+            await notify("Nothing selected",
+                         "Select your corrected text, then press the bind again.")
+            return
+        learned = await asyncio.to_thread(
+            self.style.learn, self._last_insertion, after)
+        n = learned["corrections"]
+        await notify("Correction learned",
+                     f"{n} vocabulary fix{'es' if n != 1 else ''} + 1 style example",
+                     timeout_ms=4000)
+        print(f"correction learned: {n} vocab entries", flush=True)
+
+    # ------------------------------------------------------------- playback glue
+
+    async def _interrupt_playback(self) -> None:
+        st = self.state.get().get("state")
+        if st != "playing":
+            return
+        if self._interrupt == "stop":
+            await self.stop_session()
+        else:
+            await self.pause()
+            self._paused_by_dictation = True
+
+    async def _resume_playback(self) -> None:
+        if not self._paused_by_dictation:
+            return
+        self._paused_by_dictation = False
+        if not self.player or not self.session or self.session.done():
+            return
+        # Ask the player, not the state file: the state was overwritten with
+        # "listening"/"processing" while the dictation ran.
+        if await self.player.is_paused():
+            await self.player.toggle_pause()
+        data = self.state.get()
+        data["state"] = "playing"
+        self.state.set(**data)
+
     # ------------------------------------------------------------- session
 
     async def _load_doc(self, source: str, path: str | None,
@@ -123,6 +439,7 @@ class Daemon:
         try:
             await self.stop_session()
             self._fg_task = asyncio.current_task()
+            self._last_action = "read"
             self.state.set(state="processing")
             doc = await self._load_doc(source, path, text)
             if doc is None:
@@ -161,6 +478,7 @@ class Daemon:
         try:
             await self.stop_session()
             self._fg_task = asyncio.current_task()
+            self._last_action = "read"
             self.state.set(state="processing")
             if doc is None:
                 doc = await self._load_doc(source, path, text)
@@ -203,7 +521,7 @@ class Daemon:
     async def _save_note(self, mode: str, title: str, body: str):
         stamp = dt.datetime.now().strftime("%Y%m%d-%H%M")
         out = self.cfg.notes_out_dir / f"{slugify(title)}-{mode}-{stamp}.md"
-        model = (self.cfg.llm_cloud_model if self.cfg.llm_provider == "cloud"
+        model = (self.cfg.llm_cloud_model if self.brain.last_lane == "cloud"
                  else self.cfg.llm_local_model)
         out.write_text(f"---\nsource: {title}\nmode: {mode}\nmodel: {model}\n"
                        f"date: {dt.datetime.now():%Y-%m-%d %H:%M}\n---\n\n{body}\n")
@@ -286,7 +604,7 @@ class Daemon:
             return {"ok": True}
         if st in ("playing", "paused") and self.player:
             self._skip = True
-            await self.player.stop()  # drains wait_done, session moves on
+            await self.player.stop()
             return {"ok": True, "skipped": True}
         return {"ok": True, "noop": True}
 
@@ -314,9 +632,18 @@ class Daemon:
         self.state.set(state="idle")
 
     async def keep(self) -> dict:
+        """Context-sensitive (D41): after a dictation this promotes the transcript,
+        after a read it keeps the rendered audio."""
+        if self._last_action == "dictate" and self._last_dictation:
+            d = self._last_dictation
+            out = await asyncio.to_thread(
+                dictation.promote, self.cfg, d["text"], d["mode"], d["app"])
+            await notify("Dictation saved as a note", str(out))
+            return {"ok": True, "path": str(out), "kind": "dictation"}
+
         wavs = sorted(self.render_dir.glob("*.wav")) if self.render_dir.exists() else []
         if not wavs or not self.current_doc:
-            await notify("Nothing to keep", "No rendered audio from a previous read.")
+            await notify("Nothing to keep", "No rendered audio or recent dictation.")
             return {"ok": True, "noop": True}
         stamp = dt.datetime.now().strftime("%Y%m%d-%H%M")
         out = self.cfg.audio_dir / f"{slugify(self.current_doc.title)}-{stamp}.wav"
@@ -334,12 +661,11 @@ class Daemon:
 
         await asyncio.to_thread(_concat)
         await notify("Audio kept", str(out))
-        return {"ok": True, "path": str(out)}
+        return {"ok": True, "path": str(out), "kind": "audio"}
 
     # ------------------------------------------------------------- inbox
 
     async def on_inbox_file(self, path) -> None:
-        # single-action dunst notification: middle-click reads (dunst's do_action default)
         choice = await ask("New document in inbox", f"{path.name} — middle-click to read",
                            [("read", "Read aloud")])
         if choice == "read":
@@ -353,6 +679,19 @@ async def amain() -> None:
     daemon.state.set(state="idle")
     server = await serve(C.CTL_SOCKET, daemon.handle)
     asyncio.ensure_future(asyncio.to_thread(daemon.tts.warmup))
+
+    async def warm_stt() -> None:
+        try:
+            await asyncio.to_thread(daemon.stt.load)
+            print("stt model ready", flush=True)
+        except SttUnavailable as e:
+            print(f"stt unavailable: {e}", flush=True)
+
+    if daemon.stt.available():
+        asyncio.ensure_future(warm_stt())
+    else:
+        print("stt model not downloaded yet — first dictation will fetch it",
+              flush=True)
 
     watcher = None
     if cfg.inbox_enabled:
@@ -370,7 +709,9 @@ async def amain() -> None:
 
     if watcher:
         watcher.stop()
+    await daemon.cancel_capture()
     await daemon.stop_session()
+    daemon.mic.close()
     if daemon.player:
         await daemon.player.close()
     server.close()
