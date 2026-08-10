@@ -28,6 +28,9 @@ from .style import StyleBook
 from .tts_kokoro import KokoroTTS, ModelsMissing, chunk_text
 
 MIN_UTTERANCE_S = 0.35
+# Ignore a second press this soon after a capture opens: that is a stutter, not an
+# intentional stop.
+PRESS_DEBOUNCE_S = 0.25
 
 
 def slugify(title: str) -> str:
@@ -177,7 +180,17 @@ class Daemon:
         if self._latched and self._cap is not None:
             return await self.finish_capture()
         if self._cap is not None:
-            return {"ok": True, "noop": "already listening"}
+            # A capture is already open, which means the key-release event never
+            # arrived — Hyprland's `bindr` does not reliably fire when the modifier
+            # is let go before the key. Finalize here so the chord degrades to
+            # press-to-start / press-to-stop instead of listening until the
+            # watchdog. The debounce keeps a stray double-press from killing a
+            # capture that has only just begun.
+            if time.monotonic() - self._cap["started"] < PRESS_DEBOUNCE_S:
+                return {"ok": True, "noop": "just started"}
+            print("press while capturing — no key release seen, finalizing",
+                  flush=True)
+            return await self.finish_capture()
         return await self.begin_capture(purpose, req, latched)
 
     async def release(self) -> dict:
@@ -335,8 +348,13 @@ class Daemon:
             if cap["note"]:
                 promoted = await asyncio.to_thread(
                     dictation.promote, self.cfg, result, cap["purpose"], cap["app"])
+            # Only report a lane when the brain actually ran; brain.last_lane is
+            # sticky, so a raw transcript would otherwise inherit the previous
+            # call's label and make the log lie.
+            used_llm = cap["purpose"] == "scribe" or cap["clean"]
+            lane = f", lane={self.brain.last_lane}" if used_llm else ""
             print(f"{cap['purpose']}: {secs:.1f}s -> {len(result.split())} words "
-                  f"({method}, lane={self.brain.last_lane})", flush=True)
+                  f"({method}{lane})", flush=True)
             if method == "failed":
                 await notify("Insertion failed", "Text is on the clipboard.",
                              urgency="critical")
@@ -684,8 +702,15 @@ async def amain() -> None:
         try:
             await asyncio.to_thread(daemon.stt.load)
             print("stt model ready", flush=True)
+            # Long captures segment with Silero; build it now so finalizing a long
+            # dictation never blocks on a download.
+            await asyncio.to_thread(daemon.stt.load_vad)
+            print("stt vad ready", flush=True)
         except SttUnavailable as e:
             print(f"stt unavailable: {e}", flush=True)
+        except Exception as e:  # noqa: BLE001 — VAD is optional; short captures work
+            print(f"stt vad unavailable ({type(e).__name__}: {e}) — "
+                  "captures over the segment limit may be truncated", flush=True)
 
     if daemon.stt.available():
         asyncio.ensure_future(warm_stt())

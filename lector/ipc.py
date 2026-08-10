@@ -25,6 +25,11 @@ async def serve(path: Path, handler) -> asyncio.AbstractServer:
             await writer.drain()
         except asyncio.TimeoutError:
             pass
+        except (ConnectionResetError, BrokenPipeError):
+            # A keybind fires `lectorctl` and nobody waits for the reply, so the
+            # client is often gone before drain(). Normal, not an error — without
+            # this it prints a traceback into the journal on every bind press.
+            pass
         finally:
             writer.close()
 

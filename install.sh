@@ -64,6 +64,13 @@ stt.build(config.load()).load()
 print('parakeet ready')
 " || echo "WARN: STT model download failed — dictation will retry on first use"
 fi
+# Silero VAD segments captures longer than max_segment_s. Fetch it now: pulling it on
+# demand stalls a long dictation at exactly the moment the user waits for their text.
+HF_HUB_DISABLE_XET=1 uv run python -c "
+from lector import config, stt
+stt.build(config.load()).load_vad()
+print('vad ready')
+" 2>/dev/null || echo "note: VAD not pre-fetched — long captures fetch it on first use"
 
 step "voice-input prerequisites"
 for b in wtype wl-copy pactl; do
