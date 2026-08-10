@@ -120,6 +120,13 @@ modifiers, and costs about 9ms per character. You can opt an app back into pasti
 `[inject.chords]`, but a chord with two or more modifiers is refused, because that is
 the combination that strands them.
 
+**Injection waits for your hands.** Text goes in moments after you release a chord that
+begins with Super, so if Super is still down then every typed character is a
+`Super+<key>` shortcut — dictating "question mark" jumped to workspace 10, because
+`Super+0` is bound to it. lector reads physical key state from `/dev/input` and waits
+for modifiers to come up first. That costs ~3ms when your hands are already off, needs
+membership of the `input` group, and is skipped harmlessly without it.
+
 ## Smoke
 
 ```sh

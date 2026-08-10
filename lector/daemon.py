@@ -435,7 +435,12 @@ class Daemon:
             lane = f", lane={self.brain.last_lane}" if used_llm else ""
             print(f"{cap['purpose']}: {secs:.1f}s -> {len(result.split())} words "
                   f"({method}{lane})", flush=True)
-            if method == "failed":
+            if method == "held":
+                await notify("Keys still held",
+                             "Text is on the clipboard — typing it while a modifier "
+                             "is down would fire your shortcuts instead.",
+                             timeout_ms=6000)
+            elif method == "failed":
                 await notify("Insertion failed", "Text is on the clipboard.",
                              urgency="critical")
             elif promoted:

@@ -67,6 +67,7 @@ class Config:
     inject_restore_clipboard: bool = True
     inject_copy_to_clipboard: bool = True
     inject_type_delay_ms: int = 1
+    inject_wait_modifiers_ms: int = 3000
 
     # --- style (P3) ---
     style_card: Path = field(
@@ -160,6 +161,7 @@ def load() -> Config:
         inject_restore_clipboard=bool(inject.get("restore_clipboard", True)),
         inject_copy_to_clipboard=bool(inject.get("copy_to_clipboard", True)),
         inject_type_delay_ms=int(inject.get("type_delay_ms", 1)),
+        inject_wait_modifiers_ms=int(inject.get("wait_modifiers_ms", 3000)),
         style_card=Path(style.get("card", "~/.config/lector/style.md")).expanduser(),
         style_profiles=dict(style.get("profiles", {})),
         shortcuts=dict(raw.get("shortcuts", {})),

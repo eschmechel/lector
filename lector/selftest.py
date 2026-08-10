@@ -122,6 +122,24 @@ def inject_methods():
     assert _chord_args("ctrl+v") == ["-M", "ctrl", "-k", "v", "-m", "ctrl"]
 
 
+def modifier_watch():
+    """Physically-held modifiers must be readable, so injection can wait them out."""
+    from .modkeys import MOD_CODES, ModifierWatcher
+
+    watcher = ModifierWatcher()
+    if not watcher.available():
+        return "skip"          # not a member of the `input` group
+    try:
+        held = watcher.held()
+        assert isinstance(held, list), type(held)
+        # Only real modifier codes are ever reported, and the ioctl must not raise
+        # on any of the machine's input devices.
+        assert all(code in MOD_CODES for code in held), held
+        watcher.held()         # a second read must also succeed
+    finally:
+        watcher.close()
+
+
 def style_book():
     from .style import StyleBook
 
@@ -380,6 +398,7 @@ def main() -> None:
     check("file-URI decoding", uri_decoding)
     check("brain prompts/think-strip", brain_offline)
     check("injection method selection", inject_methods)
+    check("held-modifier detection", modifier_watch)
     check("style card + shortcuts", style_book)
     check("correction learning", style_learning)
     check("dictation log + promote", dictation_log)
