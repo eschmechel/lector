@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import datetime as dt
 import os
 import re
@@ -9,9 +10,14 @@ import time
 import uuid
 from pathlib import Path
 
+import numpy as np
+
 from . import config as C
 from . import dictation, notify as N
-from .audio_in import AudioUnavailable, MicStream, bluetooth_default
+from .audio_in import (
+    MAX_LEAD_IN_S, SILENCE_EPS, AudioUnavailable, MicStream, bluetooth_default,
+    source_fingerprint,
+)
 from .brain import (
     CLEAN_SYSTEM, SCRIBE_REWRITE_SYSTEM, SCRIBE_WRITE_SYSTEM,
     Brain, BrainUnavailable,
@@ -71,6 +77,7 @@ class Daemon:
         self._last_action = "read"
         self._interrupt = cfg.dictation_interrupt
         self._bt_warned = False
+        self._mic_stale = False   # device moved mid-capture; rebind once idle
 
     # ------------------------------------------------------------- dispatch
 
@@ -211,7 +218,64 @@ class Daemon:
         self._pending = None
         await self.finish_capture()
 
+    # -------------------------------------------------------- device hot-plug
+
+    async def rebind_mic(self, why: str) -> bool:
+        """Rebind the capture stream to whatever the default source is now."""
+        try:
+            await asyncio.to_thread(self.mic.reopen)
+        except AudioUnavailable as e:
+            print(f"mic rebind failed ({why}): {e}", flush=True)
+            return False
+        self._mic_stale = False
+        print(f"mic rebound to {self.mic.opened_for or 'default'} ({why})", flush=True)
+        return True
+
+    async def device_watch_loop(self) -> None:
+        """Rebind the mic when PipeWire's default source moves.
+
+        Bluetooth headsets disconnect constantly — AirPods do it whenever you put
+        them down — and each reconnect creates a *new* PipeWire node under the same
+        device name. A stream bound to the old node keeps running and returns
+        silence, so without this the first dictation after a reconnect is empty and
+        every one after it too, until the daemon restarts.
+        """
+        while True:
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "pactl", "subscribe",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.DEVNULL)
+            except FileNotFoundError:
+                print("pactl not found — mic hot-plug detection disabled", flush=True)
+                return
+            try:
+                while True:
+                    line = await proc.stdout.readline()
+                    if not line:
+                        break
+                    event = line.decode(errors="replace")
+                    if "on source" not in event and "on server" not in event:
+                        continue
+                    # Let the reconnect settle: a single reconnect emits a burst,
+                    # and the default source is briefly wrong mid-switch.
+                    await asyncio.sleep(1.0)
+                    if not self.mic.stale():
+                        continue
+                    if self._cap is not None:
+                        self._mic_stale = True   # rebind after this capture
+                        continue
+                    await self.rebind_mic("default source changed")
+            finally:
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+            await asyncio.sleep(2)   # pactl exited; resubscribe
+
     async def begin_capture(self, purpose: str, req: dict, latched: bool) -> dict:
+        # Backstop for anything the watcher missed (it was busy, pactl died, the
+        # device moved while a capture was running).
+        if self._mic_stale or self.mic.stale():
+            await self.rebind_mic("stale at capture start")
         if self.cfg.warn_bluetooth and not self._bt_warned:
             bt = await asyncio.to_thread(bluetooth_default)
             if bt:
@@ -311,6 +375,22 @@ class Daemon:
             audio = await asyncio.to_thread(self.mic.stop_collect)
             await N.close()
             secs = audio.size / self.cfg.mic_sample_rate if audio.size else 0.0
+            wall = time.monotonic() - cap["started"]
+
+            # The stream produced nothing but digital silence for the whole hold:
+            # it is bound to a node that is gone or will not wake. Rebind so the
+            # retry works, rather than failing silently on every future attempt.
+            silent = (audio.size == 0 and wall >= MAX_LEAD_IN_S) or (
+                audio.size > 0 and float(np.max(np.abs(audio))) < SILENCE_EPS)
+            if silent:
+                await self.rebind_mic("captured only digital silence")
+                await self._resume_playback()
+                await notify("Microphone reset",
+                             "That capture was silent — the audio device had "
+                             "changed. Try again.", timeout_ms=5000)
+                self.state.set(state="idle")
+                return {"ok": True, "empty": True, "rebound": True}
+
             if secs < MIN_UTTERANCE_S:
                 await self._resume_playback()
                 await notify("Nothing heard", "Hold the key while speaking.",
@@ -373,6 +453,10 @@ class Daemon:
         finally:
             self._finalizing = False
             await self._resume_playback()
+            if self._mic_stale:
+                # The device moved while this capture was running; the watcher
+                # deferred to avoid cutting it short.
+                await self.rebind_mic("deferred from mid-capture")
             if self.state.get().get("state") in ("listening", "processing"):
                 self.state.set(state="idle")
 
@@ -718,6 +802,10 @@ async def amain() -> None:
         print("stt model not downloaded yet — first dictation will fetch it",
               flush=True)
 
+    watcher_task = asyncio.ensure_future(daemon.device_watch_loop())
+    print(f"watching audio devices (default source: "
+          f"{source_fingerprint() or 'none'})", flush=True)
+
     watcher = None
     if cfg.inbox_enabled:
         from .capture import InboxWatcher
@@ -732,6 +820,9 @@ async def amain() -> None:
         loop.add_signal_handler(sig, stop.set)
     await stop.wait()
 
+    watcher_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await watcher_task
     if watcher:
         watcher.stop()
     await daemon.cancel_capture()
