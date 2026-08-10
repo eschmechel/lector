@@ -225,6 +225,31 @@ def press_release_machine():
     asyncio.run(scenario())
 
 
+def source_identity():
+    """The default source must be identified by node id, not just name.
+
+    A Bluetooth headset keeps its device name across a reconnect but comes back as
+    a new PipeWire node, so a name-only check would never notice it moved.
+    """
+    from .audio_in import MicStream, source_fingerprint
+
+    fp = source_fingerprint()
+    if not fp:
+        return "skip"          # no pulse/pipewire on this box
+    assert "#" in fp, f"fingerprint must carry the node id, got {fp!r}"
+
+    mic = MicStream("pipewire", 16000, 1600, 300)
+    assert mic.stale() is False, "a stream that was never opened cannot be stale"
+    try:
+        mic._stream = object()     # pretend it is open (never a real device here)...
+        mic.opened_for = "bluez_input.aa:bb#999"   # ...against a node that is gone
+        assert mic.stale() is True, "a moved default source must read as stale"
+        mic.opened_for = fp
+        assert mic.stale() is False, "unchanged source must not read as stale"
+    finally:
+        mic._stream = None
+
+
 def mic_capture():
     from . import config
     from .audio_in import AudioUnavailable, MicStream
@@ -240,10 +265,46 @@ def mic_capture():
         mic.start_collect()
         time.sleep(0.6)
         audio = mic.stop_collect()
-        assert audio.size > 0, "stream opened but captured no frames"
-        assert audio.dtype.name == "float32"
+        # Zero frames is legitimate: a SUSPENDED node emits exact zeros for a
+        # while after opening and that lead-in is deliberately dropped. What must
+        # hold is that the stream opened and produced correctly-typed data if any.
+        assert mic.opened_for, "an open stream must record which source it bound to"
+        if audio.size:
+            assert audio.dtype.name == "float32", audio.dtype
     finally:
         mic.close()
+
+
+def lead_in_drop():
+    """Digital silence before the first real audio is dropped, signal is kept.
+
+    Deterministic: drives the callback directly instead of depending on whether
+    this machine's mic happens to be awake.
+    """
+    import numpy as np
+
+    from .audio_in import SILENCE_EPS, MicStream
+
+    mic = MicStream("pipewire", 16000, 1600, warmup_ms=0)
+    mic._opened_at = time.monotonic() - 10   # past the fixed warm-up
+    # Arm collection by hand: start_collect() would open real audio hardware, and
+    # a PortAudio stream left dangling next to a re-init segfaults the process.
+    mic._collecting = True
+    mic._saw_signal = False
+    mic._collect_started = time.monotonic()
+
+    silence = np.zeros((1600, 1), dtype=np.float32)
+    speech = np.full((1600, 1), 0.05, dtype=np.float32)
+
+    for _ in range(3):
+        mic._on_block(silence, 1600, None, None)
+    assert mic.peek_seconds() == 0.0, "silent lead-in must be dropped"
+
+    mic._on_block(speech, 1600, None, None)
+    mic._on_block(silence, 1600, None, None)   # a pause mid-sentence is kept
+    audio = mic.stop_collect()
+    assert audio.size == 3200, f"expected speech + trailing pause, got {audio.size}"
+    assert float(np.max(np.abs(audio))) > SILENCE_EPS
 
 
 def llm_roundtrip():
@@ -317,6 +378,8 @@ def main() -> None:
     check("correction learning", style_learning)
     check("dictation log + promote", dictation_log)
     check("press/release state machine", press_release_machine)
+    check("audio source identity", source_identity)
+    check("silent lead-in dropped", lead_in_drop)
     check("mic capture", mic_capture)
     check("local LLM roundtrip", llm_roundtrip)
     check("kokoro TTS render", tts_render)

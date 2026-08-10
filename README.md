@@ -100,9 +100,17 @@ lectorctl pause | stop | next | keep
 lectorctl status                        # json — script-friendly
 ```
 
-Hold-to-talk is a press bind plus a `bindr` release bind. If your compositor ever drops
-a release event, a watchdog finalizes the capture after `max_hold_s` rather than
-listening forever; set `hold_mode = false` to use a plain toggle instead.
+Hold-to-talk is a press bind plus a `bindr` release bind. Hyprland does not always fire
+the release when you let go of the modifier first, so pressing again finalizes the
+capture — the chord degrades to press-to-start / press-to-stop rather than hanging, and
+a watchdog closes it after `max_hold_s` regardless. Set `hold_mode = false` for a plain
+toggle.
+
+**Bluetooth headsets.** Every reconnect creates a new PipeWire node under the same
+device name, so a capture stream bound to the old one stays open and records silence.
+lector watches PipeWire and rebinds when the default source moves, and if a capture
+still comes back as pure digital silence it rebinds and tells you to try again. Put your
+AirPods down and pick them up as often as you like.
 
 ## Smoke
 
