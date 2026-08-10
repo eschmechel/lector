@@ -169,6 +169,62 @@ def dictation_log():
         assert note.parent == cfg.notes_out_dir
 
 
+def press_release_machine():
+    """A press while already capturing must finalize.
+
+    Hyprland's `bindr` does not fire reliably when the modifier is released before
+    the key, so without this the mic stays open until the watchdog and the chord
+    feels stuck. Regression test for that.
+    """
+    import asyncio
+
+    from .daemon import PRESS_DEBOUNCE_S, Daemon
+
+    async def scenario() -> None:
+        with tempfile.TemporaryDirectory() as td:
+            cfg = _tmp_cfg(td)
+            cfg.style_card = Path(td) / "style.md"
+            d = Daemon(cfg)
+            finished: list[str] = []
+
+            async def fake_begin(purpose, req, latched):
+                d._cap = {"purpose": purpose, "started": time.monotonic(),
+                          "clean": False, "note": False, "cloud": False,
+                          "selection": "", "app": ""}
+                d._latched = latched
+                return {"ok": True}
+
+            async def fake_finish():
+                finished.append(d._cap["purpose"] if d._cap else "?")
+                d._cap = None
+                d._latched = False
+                return {"ok": True}
+
+            d.begin_capture = fake_begin
+            d.finish_capture = fake_finish
+
+            await d.press("dictate", {})
+            assert d._cap is not None, "first press must open a capture"
+
+            # Immediately again: a stutter, not a stop.
+            await d.press("dictate", {})
+            assert d._cap is not None and not finished, "debounce must hold"
+
+            # Past the debounce, a press means the release was missed: finalize.
+            d._cap["started"] -= PRESS_DEBOUNCE_S + 0.1
+            await d.press("dictate", {})
+            assert finished == ["dictate"], f"press must finalize, got {finished}"
+            assert d._cap is None
+
+            # Normal path: a held release still finalizes directly.
+            await d.press("dictate", {})
+            d.mic.peek_seconds = lambda: 5.0
+            await d.release()
+            assert finished == ["dictate", "dictate"], finished
+
+    asyncio.run(scenario())
+
+
 def mic_capture():
     from . import config
     from .audio_in import AudioUnavailable, MicStream
@@ -260,6 +316,7 @@ def main() -> None:
     check("style card + shortcuts", style_book)
     check("correction learning", style_learning)
     check("dictation log + promote", dictation_log)
+    check("press/release state machine", press_release_machine)
     check("mic capture", mic_capture)
     check("local LLM roundtrip", llm_roundtrip)
     check("kokoro TTS render", tts_render)

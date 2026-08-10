@@ -69,6 +69,15 @@ class OnnxAsrTranscriber:
             raise SttUnavailable(
                 f"could not load STT model {self.model_name!r}: {e}") from e
 
+    def load_vad(self) -> None:
+        """Fetch and build the VAD up front.
+
+        Otherwise the first capture longer than max_segment_s stalls mid-finalize
+        downloading Silero — the user is waiting on their text at that moment.
+        """
+        self.load()
+        self._vad()
+
     def _vad(self):
         if self._vad_adapter is None:
             import onnx_asr
