@@ -18,10 +18,17 @@ ln -sf "$REPO/.venv/bin/lectorctl" "$HOME/.local/bin/lectorctl"
 ln -sf "$REPO/.venv/bin/lectord" "$HOME/.local/bin/lectord"
 
 step "data dirs + config"
-mkdir -p "$HOME/Notes/lector"/{inbox,notes,audio,index}
+mkdir -p "$HOME/Notes/lector"/{inbox,notes,audio,index,dictation}
 CONF_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/lector"
 mkdir -p "$CONF_DIR"
-[[ -f "$CONF_DIR/config.toml" ]] || cp config.example.toml "$CONF_DIR/config.toml"
+if [[ -f "$CONF_DIR/config.toml" ]]; then
+    # Never overwrite an existing config; every new key has a code default, so an
+    # old config keeps working. Just say what it is missing.
+    grep -q '^\[dictation\]' "$CONF_DIR/config.toml" || \
+        echo "NOTE: $CONF_DIR/config.toml predates voice input — defaults apply. See config.example.toml for [dictation]/[inject]/[style]/[shortcuts]."
+else
+    cp config.example.toml "$CONF_DIR/config.toml"
+fi
 
 step "kokoro models (~340MB, one-time)"
 mkdir -p "$MODELS_DIR"
@@ -33,6 +40,34 @@ for f in kokoro-v1.0.onnx voices-v1.0.bin; do
     else
         echo "$f already present"
     fi
+done
+
+step "parakeet STT model (~671MB int8, one-time)"
+# onnx-asr fetches into the HuggingFace cache on first load; do it here so the first
+# dictation isn't a silent multi-minute download.
+if uv run python -c "
+import sys
+from lector import config, stt
+if stt.build(config.load()).available():
+    print('parakeet already cached'); sys.exit(0)
+sys.exit(1)
+" 2>/dev/null; then
+    :
+else
+    echo "downloading parakeet-tdt-0.6b-v2 (int8), ~671MB ..."
+    # hf-xet's parallel chunked transport stalls indefinitely on some networks
+    # (observed: zero bytes for minutes behind a Tailscale egress, while plain
+    # HTTPS to the same CDN ran at ~1.8MB/s). The classic downloader is reliable.
+    HF_HUB_DISABLE_XET=1 uv run python -c "
+from lector import config, stt
+stt.build(config.load()).load()
+print('parakeet ready')
+" || echo "WARN: STT model download failed — dictation will retry on first use"
+fi
+
+step "voice-input prerequisites"
+for b in wtype wl-copy pactl; do
+    command -v "$b" >/dev/null || echo "WARN: $b not found — dictation needs it (pacman -S ${b})"
 done
 
 step "systemd user service"
