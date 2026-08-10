@@ -76,6 +76,13 @@ method = "type"
 type_delay_ms = 1            # wtype rejects 0; per-keystroke cost dominates anyway
 copy_to_clipboard = true     # also copy, so a mis-aimed insert is recoverable
 restore_clipboard = true     # only used by the paste path
+# Wait this long for physically-held modifier keys to come up before inserting.
+# Injection happens right after you release a chord that begins with Super, and if
+# Super is still down then every typed character is a Super+<key> shortcut —
+# dictating "question mark" switched workspaces, because Super+0 is bound to
+# workspace 10. Costs ~3ms when nothing is held. Needs read access to
+# /dev/input/event* (the `input` group); without it the wait is skipped. 0 disables.
+wait_modifiers_ms = 3000
 
 [inject.chords]
 # Per-app override, matched on the Hyprland window class. Value is "type" or a

@@ -21,9 +21,39 @@ chord with two or more modifiers is refused rather than silently stranding them.
 
 import asyncio
 import json
+import time
+
+from .modkeys import ModifierWatcher
 
 MOD_ALIASES = {"super": "logo", "meta": "logo", "control": "ctrl"}
 TYPE = "type"
+
+_MODS = ModifierWatcher()
+
+
+async def wait_for_modifiers(cfg) -> bool:
+    """Block until no modifier key is physically held. True if it cleared.
+
+    Injection happens moments after the user let go of a chord that begins with
+    Super. If Super is still down, every synthesized keystroke becomes a
+    Super+<key> shortcut — dictating "question mark" jumped to workspace 10,
+    because `Super, 0` is bound to it. Waiting is cheap; the alternative is firing
+    the user's keybinds at random.
+    """
+    budget = cfg.inject_wait_modifiers_ms / 1000.0
+    if budget <= 0 or not await asyncio.to_thread(_MODS.available):
+        return True
+    deadline = time.monotonic() + budget
+    while True:
+        held = await asyncio.to_thread(_MODS.held)
+        if not held:
+            return True
+        if time.monotonic() >= deadline:
+            print(f"inject: modifier keys {held} still held after "
+                  f"{cfg.inject_wait_modifiers_ms}ms — refusing to inject",
+                  flush=True)
+            return False
+        await asyncio.sleep(0.03)
 
 
 async def _run(*cmd: str, stdin: bytes | None = None) -> tuple[int, str]:
@@ -120,6 +150,13 @@ async def insert(text: str, cfg) -> str:
 
     win = await active_window()
     method = method_for(win.get("class", ""), cfg)
+
+    # Never inject on top of a held modifier: the keystrokes would be read as
+    # shortcuts, not text. If they are still down after the budget, refuse —
+    # firing the user's keybinds at random is worse than making them paste.
+    if not await wait_for_modifiers(cfg):
+        await set_clipboard(text)
+        return "held"
 
     if method != TYPE and not chord_is_safe(method):
         print(f"inject: refusing chord {method!r} — two or more modifiers strand "
